@@ -18,9 +18,13 @@ struct ChatView: View {
             controlsHeader
             Divider()
             messageList
+                .frame(minHeight: 0, maxHeight: .infinity)
+                .layoutPriority(1)
             Divider()
             inputBar
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: Agent 与技能

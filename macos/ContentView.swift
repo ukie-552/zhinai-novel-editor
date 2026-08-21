@@ -57,22 +57,30 @@ struct ContentView: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let sidebarFits = width >= 720
-            let assistantFits = width >= 980
+            let assistantFits = width >= 860
 
-            HStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
                 ActivityBar(isSidebarPresented: $isSidebarPresented)
+                    .frame(height: geometry.size.height)
                 HSplitView {
                     if isSidebarPresented && sidebarFits {
                         SidebarView()
-                            .frame(minWidth: 160, idealWidth: 220, maxWidth: 300)
+                            .frame(minWidth: 160, idealWidth: 220, maxWidth: 300, maxHeight: .infinity)
                     }
                     MainArea(
                         isAssistantPresented: $isAssistantPresented,
                         assistantFits: assistantFits
                     )
-                    .frame(minWidth: 340, maxWidth: .infinity)
+                    .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(
+                    width: max(0, geometry.size.width - 42),
+                    height: geometry.size.height,
+                    alignment: .top
+                )
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
             .background { DefaultBackgroundView() }
         }
         .toolbar { toolbarContent }
@@ -229,8 +237,10 @@ struct MainArea: View {
                     EditorView()
                         .frame(minWidth: 340, idealWidth: 680, maxWidth: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor).opacity(0.26))
     }
 }

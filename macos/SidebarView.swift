@@ -19,15 +19,20 @@ struct SidebarView: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
+            .fixedSize(horizontal: false, vertical: true)
             Divider()
-            switch app.sidebarTab {
-            case .chapters: ChapterList()
-            case .lore: LoreList()
-            case .search: SearchList()
-            case .vectors: VectorLibraryList()
-            case .conversations: ConversationList()
+            Group {
+                switch app.sidebarTab {
+                case .chapters: ChapterList()
+                case .lore: LoreList()
+                case .search: SearchList()
+                case .vectors: VectorLibraryList()
+                case .conversations: ConversationList()
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var panelTitle: String {
@@ -61,6 +66,7 @@ struct ConversationList: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+            .fixedSize(horizontal: false, vertical: true)
             Divider()
 
             if app.conversations.isEmpty {
@@ -192,6 +198,7 @@ struct LoreList: View {
                 .help("新建设定")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
+            .fixedSize(horizontal: false, vertical: true)
             if app.entries.isEmpty {
                 Spacer()
                 Text("设定库是作品的「世界书」\n人物、地点、世界观…写作时自动注入")
@@ -241,6 +248,7 @@ struct SearchList: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12))
                 .padding(.horizontal, 10).padding(.vertical, 8)
+                .fixedSize(horizontal: false, vertical: true)
                 .onChange(of: app.searchText) { _ in app.refreshSearch() }
             if app.searchText.isEmpty {
                 Spacer()
@@ -323,6 +331,7 @@ struct VectorLibraryList: View {
                 if app.vectorImporting { ProgressView().controlSize(.small) }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+            .fixedSize(horizontal: false, vertical: true)
 
             if !app.vectorImportMessage.isEmpty {
                 Text(app.vectorImportMessage)
