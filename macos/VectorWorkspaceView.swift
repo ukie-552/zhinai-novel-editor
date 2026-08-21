@@ -30,7 +30,7 @@ struct VectorWorkspaceView: View {
                 emptyLibrary
             }
         }
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.26))
     }
 
     private func chapterContainer(_ library: VectorLibrary) -> some View {
@@ -145,7 +145,7 @@ private struct VectorChapterEditor: View {
                 .font(.system(size: 14)).lineSpacing(5)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 18).padding(.vertical, 14)
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.68))
         }
         .onChange(of: title) { _ in isDirty = true }
         .onChange(of: content) { _ in isDirty = true }
