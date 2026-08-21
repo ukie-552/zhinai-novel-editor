@@ -1,0 +1,19 @@
+# Build outputs
+build/
+.build/
+DerivedData/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# macOS and Xcode user state
+.DS_Store
+*.xcuserstate
+xcuserdata/
+
+# Editor files
+.idea/
+.vscode/
+*.swp
