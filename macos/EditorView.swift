@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - 编辑区（右主区）：大纲 + 章节正文
+// MARK: - 编辑区（右主区）：书籍工作台 / 章节正文，两种明确模式
 
 struct EditorView: View {
     @EnvironmentObject var app: AppState
@@ -10,9 +10,23 @@ struct EditorView: View {
         app.chapters.first { $0.id == app.selectedChapterID }
     }
 
+    private var currentChapterCharacterCount: Int {
+        currentChapter?.content.count ?? 0
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            if let c = currentChapter {
+            if app.currentNovelID == nil {
+                VStack(spacing: 10) {
+                    Image(systemName: "books.vertical")
+                        .font(.system(size: 30)).foregroundStyle(.tertiary)
+                    Text("请在左侧选择或新建书籍")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if app.contentEditingMode == .book {
+                BookCardsView()
+            } else if let c = currentChapter {
                 header(c)
                 Divider()
                 outlineSection
@@ -24,7 +38,7 @@ struct EditorView: View {
                 VStack(spacing: 10) {
                     Image(systemName: "doc.text")
                         .font(.system(size: 30)).foregroundStyle(.tertiary)
-                    Text(app.currentNovelID == nil ? "请在左侧选择或新建作品" : "暂无章节，点击侧栏「＋ 新章节」")
+                    Text("章节不存在，请重新选择章节或返回书籍工作台")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,7 +57,14 @@ struct EditorView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 14, weight: .semibold))
             Spacer()
-            Text("\(c.content.count) 字")
+            Button {
+                app.showBookWorkspace()
+            } label: {
+                Label("书籍工作台", systemImage: "rectangle.grid.2x2")
+            }
+            .buttonStyle(.borderless)
+            .help("退出章节编辑，返回整书卡片")
+            Text("本章 \(currentChapterCharacterCount.formatted()) 字")
                 .font(.system(size: 11)).monospacedDigit()
                 .foregroundStyle(.secondary)
         }
@@ -104,7 +125,7 @@ struct EditorView: View {
 
     private func footer(_ c: Chapter) -> some View {
         HStack {
-            Text("\(c.content.count) 字")
+            Text("当前章节 · \(currentChapterCharacterCount.formatted()) 字")
                 .font(.system(size: 11)).monospacedDigit()
                 .foregroundStyle(.secondary)
             Spacer()

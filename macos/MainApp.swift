@@ -13,7 +13,7 @@ struct ZhinaiNovelEditorApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("新建作品") { app.createNovel() }
+                Button("新建书籍") { app.createNovel() }
                     .keyboardShortcut("n", modifiers: .command)
             }
             CommandMenu("写作") {

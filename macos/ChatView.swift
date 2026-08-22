@@ -6,20 +6,35 @@ struct ChatView: View {
     @EnvironmentObject var app: AppState
     @Binding var isPresented: Bool
     @State private var showsOutputUsage = false
+    @AppStorage("chat.followsStreamingOutput") private var followsStreamingOutput = true
 
-    private var skill: Skill { skillByID(app.skillID, skills: app.skills) }
+    private var fixedSkill: Skill? {
+        guard let id = app.currentAgent.fixedSkillID, id != "chat" else { return nil }
+        return app.skills.first { $0.id == id }
+    }
 
     private var currentConversation: Conversation? {
         app.conversations.first { $0.id == app.currentConversationID }
+    }
+    /// 选择作用域的事件只提供给模型，不作为聊天内容展示。
+    private var visibleMessages: [Msg] {
+        app.messages.filter { $0.role != "event" }
+    }
+    private var currentBackgroundRun: ConversationRun? {
+        app.currentConversationID.flatMap { app.conversationRunStates[$0] }
+    }
+    private var currentConversationBusy: Bool {
+        app.streaming || currentBackgroundRun?.status == "queued" || currentBackgroundRun?.status == "running"
     }
 
     var body: some View {
         VStack(spacing: 0) {
             controlsHeader
+                .frame(height: 42)
+                .layoutPriority(2)
             Divider()
             messageList
                 .frame(minHeight: 0, maxHeight: .infinity)
-                .layoutPriority(1)
             Divider()
             inputBar
                 .fixedSize(horizontal: false, vertical: true)
@@ -47,8 +62,10 @@ struct ChatView: View {
                 Button("管理 Agent…") { app.showAgentSheet = true }
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: app.currentAgent.icon)
+                    AgentIconView(icon: app.currentAgent.icon, avatarPath: app.currentAgent.avatarPath)
                         .font(.system(size: 10))
+                        .frame(width: 14, height: 14)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                     Text(app.currentAgent.name)
                         .lineLimit(1)
                     Image(systemName: "chevron.down").font(.system(size: 8))
@@ -56,40 +73,25 @@ struct ChatView: View {
                 .font(.system(size: 12, weight: .medium))
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(.quaternary.opacity(0.6), in: Capsule())
+                .contentShape(Capsule())
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
             .help("Agent：自定义系统提示词人格")
 
-            Menu {
-                let skills = app.availableSkills
-                ForEach(SkillCategory.allCases) { cat in
-                    let favs = skills.filter { $0.category == cat && app.config.favoriteSkills.contains($0.id) }
-                    let others = skills.filter { $0.category == cat && !app.config.favoriteSkills.contains($0.id) }
-                    if !favs.isEmpty || !others.isEmpty {
-                        Section(cat.rawValue) {
-                            ForEach(favs) { s in skillItem(s) }
-                            ForEach(others) { s in skillItem(s) }
-                        }
-                    }
-                }
-                Divider()
-                Button("管理 Markdown Skills…") { app.showSkillManager = true }
-            } label: {
+            if let fixedSkill {
                 HStack(spacing: 4) {
-                    Image(systemName: skill.icon)
-                    Text(skill.name)
-                    Image(systemName: "chevron.down").font(.system(size: 8))
+                    Image(systemName: fixedSkill.icon)
+                    Text("固定：\(fixedSkill.name)")
                 }
-                .font(.system(size: 12, weight: .medium))
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(.quaternary.opacity(0.6), in: Capsule())
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help("此 Skill 固定绑定在当前 Agent；请在 Agent 编辑页修改")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-                .help("选择或管理 Markdown Skills")
             Spacer()
-            if app.streaming {
+            if currentConversationBusy {
                 ProgressView()
                     .controlSize(.small)
                     .transition(.opacity)
@@ -123,14 +125,6 @@ struct ChatView: View {
             .buttonStyle(.borderless)
             .help("新对话（⌥⌘N）")
             .keyboardShortcut("n", modifiers: [.option, .command])
-            Button {
-                isPresented = false
-            } label: {
-                Image(systemName: "sidebar.trailing")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.borderless)
-            .help("收起对话区")
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(.ultraThinMaterial)
@@ -149,19 +143,6 @@ struct ChatView: View {
         }
     }
 
-    @ViewBuilder
-    private func skillItem(_ s: Skill) -> some View {
-        Button {
-            app.skillID = s.id
-        } label: {
-            if s.id == app.skillID {
-                Label(s.name, systemImage: "checkmark")
-            } else {
-                Text(s.name)
-            }
-        }
-    }
-
     // MARK: 消息列表
 
     private var messageList: some View {
@@ -169,30 +150,60 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 14) {
-                    ForEach(app.messages) { m in
+                    ForEach(visibleMessages) { m in
                         MessageRow(msg: m)
                             .id(m.id)
                     }
                     if app.streaming {
-                        StreamingRow(text: app.streamingText)
+                        StreamingRow(text: app.streamingText,
+                                     reasoningDuration: app.streamingReasoningDuration,
+                                     toolName: app.streamingToolName)
                             .id("streaming")
+                    } else if let run = currentBackgroundRun,
+                              run.status == "queued" || run.status == "running" {
+                        StreamingRow(text: run.partialText.isEmpty ? "后台 Agent 正在准备…" : run.partialText)
+                            .id("background-streaming")
                     }
                     Color.clear.frame(height: 1).id("bottom")
                     }
                     .padding(14)
                 }
                 .onChange(of: app.messages.count) { _ in
+                    guard followsStreamingOutput else { return }
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 .onChange(of: app.streaming) { streaming in
-                    if streaming { proxy.scrollTo("bottom", anchor: .bottom) }
+                    if streaming && followsStreamingOutput {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: app.streamingText) { _ in
+                    guard followsStreamingOutput else { return }
+                    // 等本次流式文本完成布局后再滚动，确保跟到新增加的最后一行。
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: currentBackgroundRun?.partialText) { _ in
+                    guard followsStreamingOutput else { return }
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: followsStreamingOutput) { enabled in
+                    guard enabled else { return }
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
             }
-            if app.messages.isEmpty && !app.streaming {
+            if visibleMessages.isEmpty && !currentConversationBusy {
                 VStack(spacing: 8) {
-                    Image(systemName: "bubble.left.and.bubble.right")
+                    Image(systemName: app.currentNovelID == nil ? "lightbulb" : "bubble.left.and.bubble.right")
                         .font(.system(size: 26)).foregroundStyle(.tertiary)
-                    Text("选择 Agent 与技能开始创作\n或新建一个对话")
+                    Text(app.currentNovelID == nil
+                         ? "没有灵感？有什么想写的书？\n和 Agent 聊聊吧"
+                         : "选择 Agent 开始对话\nSkill 由 Agent 固定或按索引自行调取")
                         .font(.caption).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
@@ -212,6 +223,7 @@ struct ChatView: View {
                     .scrollContentBackground(.hidden)
                     .padding(6)
                     .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9))
+                    .disabled(app.isCompressingContext)
                 Button {
                     app.sendMessage()
                 } label: {
@@ -225,12 +237,25 @@ struct ChatView: View {
                 .help("发送（⌘⏎）")
             }
             HStack {
-                Text("⌘⏎ 发送 · ⌥⌘N 新对话 · ⌘S 保存")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
+                if app.isCompressingContext {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("上下文压缩中")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("⌘⏎ 发送 · ⌥⌘N 新对话 · ⌘S 保存")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 if app.streaming {
                     Button("停止") { app.stopStreaming() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                } else if let run = currentBackgroundRun,
+                          run.status == "queued" || run.status == "running" {
+                    Button("取消后台任务") { _ = app.cancelConversationRun(run.conversationID) }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
                 }
@@ -245,7 +270,7 @@ struct ChatView: View {
 
     /// 永远显示在对话底部：点击即在输入上下文和本轮输出之间切换。
     private var conversationUsageBar: some View {
-        let tokens = showsOutputUsage ? outputTokens : inputTokens
+        let tokens = showsOutputUsage ? app.currentRequestOutputTokens : app.currentRequestInputTokens
         let limit = showsOutputUsage ? outputLimit : app.config.contextWindow
         let fraction = min(max(Double(tokens) / Double(max(limit, 1)), 0), 1)
         let color: Color = fraction >= 0.9 ? .red : (fraction >= 0.75 ? .orange : .accentColor)
@@ -261,8 +286,24 @@ struct ChatView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(color)
                     Text(showsOutputUsage ? "输出" : "输入上下文")
-                    Text("\(tokenText(tokens)) / \(tokenText(limit)) token")
-                        .monospacedDigit()
+                    if !showsOutputUsage, let plan = app.lastPlan {
+                        if plan.requestExceedsInputBudget {
+                            Text("· 输入超出窗口")
+                                .foregroundStyle(.red)
+                        } else if plan.protectedContentExceededBudget {
+                            Text("· 受保护内容超出目标")
+                                .foregroundStyle(.orange)
+                        } else if plan.compressionApplied {
+                            Text("· 已压缩 \(plan.compressionPercent)%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if showsOutputUsage {
+                        Text("· \(app.currentRequestOutputLines) 行 · \(app.currentRequestOutputCharacters) 字")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                     Image(systemName: "arrow.left.arrow.right")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
@@ -288,33 +329,13 @@ struct ChatView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("点击切换输入上下文与本轮输出用量")
-    }
-
-    /// 输入使用最近一次实际组装的上下文；还未发送时用会话历史估算。
-    private var inputTokens: Int {
-        let history = app.messages.map(\.content).joined(separator: "\n")
-        let sentContext = app.lastPlan?.totalTokens
-            ?? (history.isEmpty ? 0 : estimateTokens(history))
-        let draftTokens = app.draft.isEmpty ? 0 : estimateTokens(app.draft)
-        return sentContext + draftTokens
-    }
-
-    /// API 流式结束前显示实时输出；结束后显示本次最后一条 AI 回复。
-    private var outputTokens: Int {
-        if app.streaming { return estimateTokens(app.streamingText) }
-        let latestOutput = app.messages.last { $0.role == "assistant" }?.content ?? ""
-        return latestOutput.isEmpty ? 0 : estimateTokens(latestOutput)
+        .help(showsOutputUsage
+              ? "本轮模型输出：对话文本 \(app.currentRequestTextOutputTokens) token + 文件/工具编辑 \(app.currentRequestToolOutputTokens) token"
+              : "本轮实际发送的输入上下文；上限跟随设置中的输入窗口")
     }
 
     private var outputLimit: Int {
         app.currentAgent.maxTokens ?? app.config.maxTokens
-    }
-
-    private func tokenText(_ tokens: Int) -> String {
-        if tokens < 1_000 { return "\(tokens)" }
-        let value = Double(tokens) / 1_000
-        return value >= 10 ? String(format: "%.0fk", value) : String(format: "%.1fk", value)
     }
 
     /// 只有在可以实际调用的模型已配置时，才展示这个模型的 token 预算。
@@ -325,7 +346,9 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !app.streaming && !app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !app.isCompressingContext
+            && !currentConversationBusy
+            && !app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -344,7 +367,6 @@ struct MessageRow: View {
             } else {
                 Spacer(minLength: 30)
                 bubble
-                avatar
             }
         }
     }
@@ -359,15 +381,25 @@ struct MessageRow: View {
     }
 
     private var bubble: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let legacyParts = msg.role == "assistant" ? ModelOutputParser.parse(msg.content) : nil
+        let reasoning = msg.reasoning.isEmpty ? (legacyParts?.reasoning ?? "") : msg.reasoning
+        let response = legacyParts?.response ?? msg.content
+        return VStack(alignment: .leading, spacing: 4) {
             if msg.role == "assistant" && !msg.skill.isEmpty && msg.skill != "chat" {
                 Text(skillByID(msg.skill, skills: app.skills).name)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
-            Text(msg.content)
-                .font(.system(size: 13.5))
-                .textSelection(.enabled)
+            if msg.role == "assistant" && !reasoning.isEmpty {
+                ThinkingDisclosure(reasoning: reasoning,
+                                   duration: msg.reasoningDuration,
+                                   inProgress: false)
+            }
+            if !response.isEmpty {
+                Text(response)
+                    .font(.system(size: 13.5))
+                    .textSelection(.enabled)
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(msg.role == "user" ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06),
@@ -380,6 +412,10 @@ struct MessageRow: View {
 
 struct StreamingRow: View {
     let text: String
+    var reasoningDuration: Double = 0
+    var toolName: String? = nil
+
+    private var parts: ParsedModelOutput { ModelOutputParser.parse(text) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -389,14 +425,73 @@ struct StreamingRow: View {
                 .background(Color.accentColor.opacity(0.25), in: Circle())
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 4) {
-                Text(text.isEmpty ? "思考中…" : text + "▌")
-                    .font(.system(size: 13.5))
-                    .textSelection(.enabled)
+                if !parts.reasoning.isEmpty {
+                    ThinkingDisclosure(reasoning: parts.reasoning,
+                                       duration: reasoningDuration,
+                                       inProgress: parts.isThinking)
+                }
+                if let toolName, !toolName.isEmpty {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("正在调用工具：\(toolName)")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
+                if !parts.response.isEmpty {
+                    Text(parts.response + "▌")
+                        .font(.system(size: 13.5))
+                        .textSelection(.enabled)
+                } else if parts.reasoning.isEmpty && toolName == nil {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("正在思考…")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
             .frame(maxWidth: 640, alignment: .leading)
             Spacer(minLength: 30)
         }
+    }
+}
+
+private struct ThinkingDisclosure: View {
+    let reasoning: String
+    let duration: Double
+    let inProgress: Bool
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            Text(reasoning)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(.top, 5)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "brain")
+                Text(title)
+            }
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var title: String {
+        if inProgress { return "思考中…" }
+        guard duration > 0 else { return "思考过程" }
+        if duration < 60 { return String(format: "思考了 %.1f 秒", duration) }
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return "思考了 \(minutes) 分 \(seconds) 秒"
     }
 }

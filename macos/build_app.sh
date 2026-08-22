@@ -8,19 +8,30 @@ APP_NAME="织奈编辑器"
 BUILD_DIR="$ROOT/build"
 APP="$BUILD_DIR/$APP_NAME.app"
 SWIFT_FILES=(
-  macos/Models.swift macos/DB.swift macos/LLM.swift macos/Skills.swift macos/VectorStore.swift macos/AppState.swift
-  macos/MainApp.swift macos/ContentView.swift macos/SidebarView.swift macos/VectorWorkspaceView.swift
-  macos/ChatView.swift macos/EditorView.swift macos/Sheets.swift
+  macos/Models.swift macos/BookProject.swift macos/DB.swift macos/LLM.swift macos/Skills.swift macos/VectorStore.swift macos/WorkspaceTools.swift macos/GovernanceTools.swift macos/ToolGroups.swift macos/AppState.swift macos/ConversationCoordinator.swift
+  macos/MainApp.swift macos/BackgroundVideoView.swift macos/ContentView.swift macos/SidebarView.swift macos/VectorWorkspaceView.swift
+  macos/ChatView.swift macos/BookCardsView.swift macos/EditorView.swift macos/Sheets.swift
 )
+
+# 编辑器、云盘同步等进程可能在较长的优化编译期间触碰源文件，导致 Swift 报
+# "input file was modified during the build"。先复制不可变快照再交给编译器。
+BUILD_SOURCE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/zhinai-build-sources.XXXXXX")
+trap 'rm -rf "$BUILD_SOURCE_DIR"' EXIT
+SNAPSHOT_FILES=()
+for source in "${SWIFT_FILES[@]}"; do
+  snapshot="$BUILD_SOURCE_DIR/$(basename "$source")"
+  cp "$source" "$snapshot"
+  SNAPSHOT_FILES+=("$snapshot")
+done
 
 echo "==> 清理旧构建…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "==> 编译 Swift 应用…"
-swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 "${SWIFT_FILES[@]}" \
+swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 "${SNAPSHOT_FILES[@]}" \
   -o "$APP/Contents/MacOS/ZhinaiNovelEditor" \
-  -framework SwiftUI -framework AppKit -lsqlite3
+  -framework SwiftUI -framework AppKit -framework AVFoundation -lsqlite3
 
 echo "==> 写入 Info.plist…"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"

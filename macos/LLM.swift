@@ -21,6 +21,8 @@ enum LLM {
                            topP: Double? = nil,
                            maxTokens: Int? = nil,
                            tools: [[String: Any]]? = nil,
+                           onToolDelta: ((String) -> Void)? = nil,
+                           onToolName: ((String) -> Void)? = nil,
                            onDelta: @escaping (String) -> Void) async throws -> (text: String, toolCalls: [ToolCall]) {
         let temp = temperature ?? config.temperature
         let tp = topP ?? config.topP
@@ -31,7 +33,8 @@ enum LLM {
             return (t, [])
         } else {
             return try await streamOpenAI(config: config, messages: messages, temperature: temp,
-                                          topP: tp, maxTokens: mt, tools: tools, onDelta: onDelta)
+                                          topP: tp, maxTokens: mt, tools: tools,
+                                          onToolDelta: onToolDelta, onToolName: onToolName, onDelta: onDelta)
         }
     }
 
@@ -41,6 +44,8 @@ enum LLM {
     private static func streamOpenAI(config: ModelConfig, messages: [ChatMsg],
                                      temperature: Double, topP: Double, maxTokens: Int,
                                      tools: [[String: Any]]?,
+                                     onToolDelta: ((String) -> Void)?,
+                                     onToolName: ((String) -> Void)?,
                                      onDelta: @escaping (String) -> Void) async throws -> (String, [ToolCall]) {
         guard let base = URL(string: normalizedBase(config.baseURL)) else {
             throw LLMError.message("Base URL 无效")
@@ -72,7 +77,7 @@ enum LLM {
             throw LLMError.message("无法连接 \(url.absoluteString)：\(error.localizedDescription)")
         }
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw LLMError.message(await errorText(bytes: bytes, resp: resp))
+            throw LLMError.message(await errorText(bytes: bytes, resp: resp, model: config.model))
         }
 
         var full = ""
@@ -100,6 +105,11 @@ enum LLM {
                     let fn = tc["function"] as? [String: Any]
                     let name = fn?["name"] as? String
                     let args = fn?["arguments"] as? String ?? ""
+                    if let name, !name.isEmpty {
+                        onToolName?(name)
+                        onToolDelta?("\n\(name)\n")
+                    }
+                    if !args.isEmpty { onToolDelta?(args) }
                     if toolCalls[idx] == nil {
                         toolCalls[idx] = ToolCall(id: id ?? "call_\(idx)", name: name ?? "", arguments: "")
                         callOrder.append(idx)
@@ -168,7 +178,7 @@ enum LLM {
             throw LLMError.message("无法连接 \(url.absoluteString)：\(error.localizedDescription)")
         }
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw LLMError.message(await errorText(bytes: bytes, resp: resp))
+            throw LLMError.message(await errorText(bytes: bytes, resp: resp, model: config.model))
         }
 
         var full = ""
@@ -213,7 +223,9 @@ enum LLM {
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-                throw LLMError.message("API 错误：\(String(data: data, encoding: .utf8)?.prefix(300) ?? "")")
+                throw LLMError.message(userFacingAPIError(
+                    status: (resp as? HTTPURLResponse)?.statusCode ?? -1, data: data, model: config.model
+                ))
             }
             let j = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let blocks = j?["content"] as? [[String: Any]] ?? []
@@ -232,7 +244,9 @@ enum LLM {
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw LLMError.message("API 错误：\(String(data: data, encoding: .utf8)?.prefix(300) ?? "")")
+            throw LLMError.message(userFacingAPIError(
+                status: (resp as? HTTPURLResponse)?.statusCode ?? -1, data: data, model: config.model
+            ))
         }
         let j = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let choices = j?["choices"] as? [[String: Any]] ?? []
@@ -252,11 +266,13 @@ enum LLM {
             req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             let body: [String: Any] = ["model": config.model,
                                        "messages": messages.map { ["role": $0.0, "content": $0.1] },
-                                       "max_tokens": 32]
+                                       "max_tokens": config.maxTokens]
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-                throw LLMError.message("API 错误：\(String(data: data, encoding: .utf8)?.prefix(300) ?? "")")
+                throw LLMError.message(userFacingAPIError(
+                    status: (resp as? HTTPURLResponse)?.statusCode ?? -1, data: data, model: config.model
+                ))
             }
             let j = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let blocks = j?["content"] as? [[String: Any]] ?? []
@@ -270,11 +286,13 @@ enum LLM {
         if !config.apiKey.isEmpty { req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization") }
         let body: [String: Any] = ["model": config.model,
                                    "messages": messages.map { ["role": $0.0, "content": $0.1] },
-                                   "max_tokens": 32]
+                                   "max_tokens": config.maxTokens]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw LLMError.message("API 错误：\(String(data: data, encoding: .utf8)?.prefix(300) ?? "")")
+            throw LLMError.message(userFacingAPIError(
+                status: (resp as? HTTPURLResponse)?.statusCode ?? -1, data: data, model: config.model
+            ))
         }
         let j = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let choices = j?["choices"] as? [[String: Any]] ?? []
@@ -302,7 +320,7 @@ enum LLM {
         return b
     }
 
-    private static func errorText(bytes: URLSession.AsyncBytes, resp: URLResponse) async -> String {
+    private static func errorText(bytes: URLSession.AsyncBytes, resp: URLResponse, model: String) async -> String {
         var body = ""
         do {
             for try await line in bytes.lines {
@@ -311,6 +329,81 @@ enum LLM {
             }
         } catch { /* ignore */ }
         let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-        return "API 错误 \(status)：\(body)"
+        return userFacingAPIError(status: status, body: body, model: model)
+    }
+
+    /// 将不同模型厂商返回的 JSON / 英文错误转换为用户能直接处理的中文提示。
+    static func userFacingAPIError(status: Int, data: Data, model: String) -> String {
+        userFacingAPIError(status: status,
+                           body: String(data: data, encoding: .utf8) ?? "",
+                           model: model)
+    }
+
+    static func userFacingAPIError(status: Int, body: String, model: String) -> String {
+        let providerMessage = extractProviderMessage(from: body)
+        let lower = providerMessage.lowercased()
+        let modelName = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "当前模型" : model
+
+        if lower.contains("max_tokens") || lower.contains("max tokens") || lower.contains("maximum output") {
+            let limit = firstNumber(afterMaxTokensIn: providerMessage)
+            let limitText = limit.map { "最多支持 \($0.formatted()) tokens" } ?? "不支持当前填写的输出长度"
+            return "输出上限设置过高\n\(modelName) \(limitText)。请打开“设置 → 模型连接”，把“输出上限”调低后重试。"
+        }
+        if lower.contains("context length") || lower.contains("context window")
+            || lower.contains("too many tokens") || lower.contains("prompt is too long") {
+            return "输入内容超过模型窗口\n请缩短输入内容，或在“设置 → 上下文压缩”中提高压缩强度后重试。"
+        }
+        if status == 401 || status == 403 || lower.contains("api key")
+            || lower.contains("unauthorized") || lower.contains("authentication") {
+            return "模型服务认证失败\n请检查“设置 → 模型连接”中的 API Key、Base URL 和账号权限。"
+        }
+        if status == 404 || lower.contains("model not found") || lower.contains("does not exist") {
+            return "找不到模型“\(modelName)”\n请检查模型名称，或从该厂商的模型列表中重新选择。"
+        }
+        if status == 429 || lower.contains("rate limit") || lower.contains("too many requests") {
+            return "请求过于频繁\n模型厂商暂时限流，请稍等片刻后重试。"
+        }
+        if lower.contains("quota") || lower.contains("balance") || lower.contains("insufficient")
+            || lower.contains("credit") {
+            return "模型账户额度不足\n请前往模型厂商控制台检查余额、套餐或调用额度。"
+        }
+        if status >= 500 {
+            return "模型服务暂时不可用（HTTP \(status)）\n这是厂商服务端故障，请稍后重试。"
+        }
+        if !providerMessage.isEmpty {
+            return "模型请求失败（HTTP \(status)）\n厂商提示：\(providerMessage)"
+        }
+        return "模型请求失败（HTTP \(status)）\n模型厂商没有返回具体原因，请检查连接设置后重试。"
+    }
+
+    private static func extractProviderMessage(from body: String) -> String {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return body.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func message(in value: Any) -> String? {
+            if let dictionary = value as? [String: Any] {
+                if let text = dictionary["message"] as? String, !text.isEmpty { return text }
+                if let text = dictionary["msg"] as? String, !text.isEmpty { return text }
+                if let error = dictionary["error"], let found = message(in: error) { return found }
+                for child in dictionary.values {
+                    if let found = message(in: child) { return found }
+                }
+            } else if let values = value as? [Any] {
+                for child in values {
+                    if let found = message(in: child) { return found }
+                }
+            }
+            return nil
+        }
+        return message(in: object) ?? ""
+    }
+
+    private static func firstNumber(afterMaxTokensIn message: String) -> Int? {
+        let pattern = #"(?i)max[_ ]?tokens[^0-9]{0,40}([0-9][0-9,]*)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+              let range = Range(match.range(at: 1), in: message) else { return nil }
+        return Int(message[range].replacingOccurrences(of: ",", with: ""))
     }
 }

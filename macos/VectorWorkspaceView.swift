@@ -3,6 +3,7 @@ import SwiftUI
 struct VectorWorkspaceView: View {
     @EnvironmentObject var app: AppState
     @State private var chapterFilter = ""
+    @State private var chapterListWidth: CGFloat = 270
 
     private var selectedLibrary: VectorLibrary? {
         app.vectorLibraries.first { $0.id == app.selectedVectorLibraryID }
@@ -20,17 +21,27 @@ struct VectorWorkspaceView: View {
     var body: some View {
         Group {
             if let library = selectedLibrary {
-                HSplitView {
+                GeometryReader { geometry in
+                    let maximumListWidth = max(220, min(360, geometry.size.width - 461))
+                    let resolvedListWidth = min(max(chapterListWidth, 220), maximumListWidth)
+
+                    HStack(spacing: 0) {
                     chapterContainer(library)
-                        .frame(minWidth: 220, idealWidth: 270, maxWidth: 360)
+                            .frame(width: resolvedListWidth, height: geometry.size.height)
+                        HorizontalResizeDivider(
+                            width: $chapterListWidth,
+                            minimum: 220,
+                            maximum: maximumListWidth
+                        )
                     chapterDetail
-                        .frame(minWidth: 460, maxWidth: .infinity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             } else {
                 emptyLibrary
             }
         }
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.26))
+        .background(Color.clear)
     }
 
     private func chapterContainer(_ library: VectorLibrary) -> some View {
@@ -77,9 +88,10 @@ struct VectorWorkspaceView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
             }
         }
-        .background(.ultraThinMaterial)
+        .background(Color.clear)
     }
 
     @ViewBuilder
@@ -101,7 +113,10 @@ struct VectorWorkspaceView: View {
             Image(systemName: "cube.transparent")
                 .font(.system(size: 38, weight: .light)).foregroundStyle(Color.accentColor)
             Text("选择一个向量库").font(.system(size: 14, weight: .semibold))
-            Text("选中后可浏览全部章节并编辑正文").font(.caption).foregroundStyle(.secondary)
+            Text("导入参考作品，提取匿名化写法画像，让文字表达更自然")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("参考正文只保存在本地，不会作为续写内容直接注入模型")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -145,7 +160,7 @@ private struct VectorChapterEditor: View {
                 .font(.system(size: 14)).lineSpacing(5)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 18).padding(.vertical, 14)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.68))
+                .background(Color.clear)
         }
         .onChange(of: title) { _ in isDirty = true }
         .onChange(of: content) { _ in isDirty = true }

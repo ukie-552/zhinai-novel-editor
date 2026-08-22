@@ -48,6 +48,25 @@ final class DB {
           role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', skill TEXT NOT NULL DEFAULT '',
           created_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS conversation_runs(
+          conversation_id TEXT PRIMARY KEY,
+          novel_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'completed', prompt TEXT NOT NULL DEFAULT '',
+          agent_id TEXT, skill_id TEXT NOT NULL DEFAULT 'chat', partial_text TEXT NOT NULL DEFAULT '',
+          error TEXT NOT NULL DEFAULT '', reserved_core_percent INTEGER NOT NULL DEFAULT 25,
+          reserved_memory_mb INTEGER NOT NULL DEFAULT 128, started_at REAL, updated_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS story_nodes(
+          id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'draft', parent_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0,
+          metadata_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL, updated_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS content_revisions(
+          id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL, conversation_id TEXT, operation TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL, created_at REAL NOT NULL
+        );
         """)
         // 兼容旧库：补 pinned / conversation_id 列
         if !columnExists(table: "entries", column: "pinned") {
@@ -56,6 +75,25 @@ final class DB {
         if !columnExists(table: "messages", column: "conversation_id") {
             exec("ALTER TABLE messages ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''")
         }
+        if !columnExists(table: "messages", column: "reasoning") {
+            exec("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
+        }
+        if !columnExists(table: "messages", column: "reasoning_duration") {
+            exec("ALTER TABLE messages ADD COLUMN reasoning_duration REAL NOT NULL DEFAULT 0")
+        }
+        if !columnExists(table: "novels", column: "metadata") {
+            exec("ALTER TABLE novels ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+        }
+        if !columnExists(table: "conversation_runs", column: "reserved_core_percent") {
+            exec("ALTER TABLE conversation_runs ADD COLUMN reserved_core_percent INTEGER NOT NULL DEFAULT 25")
+        }
+        if !columnExists(table: "conversation_runs", column: "reserved_memory_mb") {
+            exec("ALTER TABLE conversation_runs ADD COLUMN reserved_memory_mb INTEGER NOT NULL DEFAULT 128")
+        }
+        // 公共会话拥有独立、持久的会话作用域；查询书库时会隐藏这条内部记录。
+        let now = Date()
+        run("INSERT OR IGNORE INTO novels(id,title,description,outline,created_at,updated_at,metadata) VALUES(?,?,?,?,?,?,?)",
+            GLOBAL_CHAT_NOVEL_ID, "__GLOBAL_CHAT__", "", "", now, now, "{}")
         // 旧消息迁移：为每个有消息的作品建「对话 1」并归入
         let orphans = query("SELECT DISTINCT novel_id FROM messages WHERE conversation_id=''", []) { text($0, 0) }
             .compactMap { $0.flatMap(UUID.init(uuidString:)) }
@@ -67,6 +105,55 @@ final class DB {
         }
         exec("CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(title, content, keywords, tokenize='trigram')")
         exec("CREATE VIRTUAL TABLE IF NOT EXISTS chapters_fts USING fts5(title, content, tokenize='trigram')")
+        migrateOverlappingStoryNodesIntoLore()
+    }
+
+    /// 早期版本把人物、地点和世界事实也存成 story_nodes，形成两份真相。
+    /// 将它们一次性归并到设定库；完整旧对象保留在版本快照中，可追溯且不丢内容。
+    func migrateOverlappingStoryNodesIntoLore() {
+        let typeMapping: [String: String] = [
+            "character_design": "character", "location_design": "location",
+            "faction_design": "faction", "item_design": "item",
+            "world_rule": "world", "power_system": "world", "history_event": "history"
+        ]
+        let legacy = query("SELECT id,novel_id,kind,title,content,status,parent_id,sort_order,metadata_json,created_at,updated_at FROM story_nodes", []) { s in
+            StoryNode(id: uuid(s, 0)!, novelID: uuid(s, 1)!, kind: text(s, 2) ?? "",
+                      title: text(s, 3) ?? "", content: text(s, 4) ?? "", status: text(s, 5) ?? "draft",
+                      parentID: uuid(s, 6), sortOrder: int(s, 7), metadataJSON: text(s, 8) ?? "{}",
+                      createdAt: date(s, 9), updatedAt: date(s, 10))
+        }.filter { typeMapping[$0.kind] != nil }
+
+        for node in legacy {
+            guard let entryType = typeMapping[node.kind] else { continue }
+            let existing = entries(novelID: node.novelID).first {
+                $0.type == entryType && $0.title.caseInsensitiveCompare(node.title) == .orderedSame
+            }
+            let target: Entry
+            if var entry = existing {
+                if !node.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   !entry.content.contains(node.content) {
+                    entry.content += entry.content.isEmpty ? node.content : "\n\n---\n\n" + node.content
+                    updateEntry(id: entry.id, content: entry.content)
+                }
+                target = entry
+            } else {
+                target = createEntry(novelID: node.novelID, type: entryType, title: node.title,
+                                     content: node.content, keywords: node.title, pinned: false)
+            }
+
+            let snapshot: [String: Any] = [
+                "id": node.id.uuidString, "kind": node.kind, "title": node.title,
+                "content": node.content, "status": node.status,
+                "parent_id": node.parentID?.uuidString ?? NSNull(), "sort_order": node.sortOrder,
+                "metadata_json": node.metadataJSON, "migrated_entry_id": target.id.uuidString
+            ]
+            let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys])
+            addRevision(novelID: node.novelID, resourceType: "story_node", resourceID: node.id.uuidString,
+                        conversationID: nil, operation: "migrated_to_lore",
+                        snapshotJSON: data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+            run("UPDATE story_nodes SET parent_id=NULL WHERE parent_id=?", node.id)
+            deleteStoryNode(id: node.id)
+        }
     }
 
     private func columnExists(table: String, column: String) -> Bool {
@@ -103,6 +190,7 @@ final class DB {
         case let s as String: sqlite3_bind_text(stmt, idx, s, -1, DB.SQLITE_TRANSIENT)
         case let i as Int: sqlite3_bind_int64(stmt, idx, Int64(i))
         case let b as Bool: sqlite3_bind_int64(stmt, idx, b ? 1 : 0)
+        case let n as Double: sqlite3_bind_double(stmt, idx, n)
         case let d as Date: sqlite3_bind_double(stmt, idx, d.timeIntervalSince1970)
         case let u as UUID: sqlite3_bind_text(stmt, idx, u.uuidString, -1, DB.SQLITE_TRANSIENT)
         default: sqlite3_bind_null(stmt, idx)
@@ -138,9 +226,10 @@ final class DB {
     // MARK: - 作品
 
     func novels() -> [Novel] {
-        query("SELECT * FROM novels ORDER BY updated_at DESC", []) { s in
+        query("SELECT * FROM novels WHERE id<>? ORDER BY updated_at DESC", [GLOBAL_CHAT_NOVEL_ID]) { s in
             Novel(id: uuid(s, 0)!, title: text(s, 1) ?? "", desc: text(s, 2) ?? "",
-                  outline: text(s, 3) ?? "", createdAt: date(s, 4), updatedAt: date(s, 5))
+                  outline: text(s, 3) ?? "", createdAt: date(s, 4), updatedAt: date(s, 5),
+                  metadata: decodeMetadata(text(s, 6)))
         }
     }
 
@@ -153,18 +242,46 @@ final class DB {
         return n
     }
 
-    func updateNovel(id: UUID, title: String? = nil, desc: String? = nil, outline: String? = nil) {
+    func updateNovel(id: UUID, title: String? = nil, desc: String? = nil, outline: String? = nil,
+                     metadata: BookMetadata? = nil) {
         var sql = "UPDATE novels SET updated_at=?"
         var args: [Any?] = [Date()]
         if let title { sql += ", title=?"; args.append(title) }
         if let desc { sql += ", description=?"; args.append(desc) }
         if let outline { sql += ", outline=?"; args.append(outline) }
+        if let metadata, let data = try? JSONEncoder().encode(metadata),
+           let json = String(data: data, encoding: .utf8) {
+            sql += ", metadata=?"; args.append(json)
+        }
         sql += " WHERE id=?"
         args.append(id)
         runArray(sql, args)
     }
 
-    func deleteNovel(id: UUID) { run("DELETE FROM novels WHERE id=?", id) }
+    private func decodeMetadata(_ json: String?) -> BookMetadata {
+        guard let json, let data = json.data(using: .utf8),
+              let metadata = try? JSONDecoder().decode(BookMetadata.self, from: data) else {
+            return BookMetadata()
+        }
+        return metadata
+    }
+
+    /// 删除作品及其全部关联数据。显式清理而不依赖 SQLite foreign_keys 开关，
+    /// 同时避免 FTS 虚表留下失效的 rowid。
+    func deleteNovel(id: UUID) {
+        exec("BEGIN IMMEDIATE")
+        run("DELETE FROM entries_fts WHERE rowid IN (SELECT rowid FROM entries WHERE novel_id=?)", id)
+        run("DELETE FROM chapters_fts WHERE rowid IN (SELECT rowid FROM chapters WHERE novel_id=?)", id)
+        run("DELETE FROM messages WHERE novel_id=?", id)
+        run("DELETE FROM conversation_runs WHERE novel_id=?", id)
+        run("DELETE FROM conversations WHERE novel_id=?", id)
+        run("DELETE FROM story_nodes WHERE novel_id=?", id)
+        // 版本快照保留删除前内容，用于审计；整书恢复尚未实现，因此不级联删除。
+        run("DELETE FROM entries WHERE novel_id=?", id)
+        run("DELETE FROM chapters WHERE novel_id=?", id)
+        run("DELETE FROM novels WHERE id=?", id)
+        exec("COMMIT")
+    }
 
     // MARK: - 章节
 
@@ -209,6 +326,17 @@ final class DB {
         run("DELETE FROM chapters WHERE id=?", id)
     }
 
+    func restoreChapter(id: UUID, novelID: UUID, number: Int, title: String, content: String) {
+        let existing = chapters(novelID: novelID).first { $0.id == id }
+        if existing != nil {
+            updateChapter(id: id, title: title, content: content, no: number)
+        } else {
+            run("INSERT INTO chapters(id,novel_id,no,title,content,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                id, novelID, number, title, content, Date(), Date())
+            syncChapterFTS(id)
+        }
+    }
+
     // MARK: - 设定库（世界书）
 
     func entries(novelID: UUID) -> [Entry] {
@@ -249,6 +377,17 @@ final class DB {
         run("DELETE FROM entries WHERE id=?", id)
     }
 
+    func restoreEntry(id: UUID, novelID: UUID, type: String, title: String, content: String,
+                      keywords: String, pinned: Bool) {
+        if entries(novelID: novelID).contains(where: { $0.id == id }) {
+            updateEntry(id: id, type: type, title: title, content: content, keywords: keywords, pinned: pinned)
+        } else {
+            run("INSERT INTO entries(id,novel_id,type,title,content,keywords,pinned,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                id, novelID, type, title, content, keywords, pinned, Date(), Date())
+            syncEntryFTS(id)
+        }
+    }
+
     // MARK: - 会话
 
     func conversations(novelID: UUID) -> [Conversation] {
@@ -275,34 +414,156 @@ final class DB {
     }
 
     func deleteConversation(id: UUID) {
+        run("DELETE FROM conversation_runs WHERE conversation_id=?", id)
         run("DELETE FROM messages WHERE conversation_id=?", id)
         run("DELETE FROM conversations WHERE id=?", id)
     }
 
     // MARK: - 对话记录
 
-    func messages(novelID: UUID, conversationID: UUID, limit: Int = 200) -> [Msg] {
+    func messages(novelID: UUID, conversationID: UUID, limit: Int = 200, offset: Int = 0) -> [Msg] {
         query("""
-            SELECT id, novel_id, conversation_id, role, content, skill, created_at
-            FROM messages WHERE novel_id=? AND conversation_id=? ORDER BY created_at ASC LIMIT ?
-            """, [novelID, conversationID, limit]) { s in
+            SELECT id, novel_id, conversation_id, role, content, skill, reasoning, reasoning_duration, created_at
+            FROM messages WHERE novel_id=? AND conversation_id=? ORDER BY created_at ASC LIMIT ? OFFSET ?
+            """, [novelID, conversationID, limit, max(0, offset)]) { s in
             Msg(id: uuid(s, 0)!, novelID: uuid(s, 1)!, conversationID: uuid(s, 2)!,
                 role: text(s, 3) ?? "user", content: text(s, 4) ?? "",
-                skill: text(s, 5) ?? "", createdAt: date(s, 6))
+                skill: text(s, 5) ?? "", reasoning: text(s, 6) ?? "",
+                reasoningDuration: real(s, 7), createdAt: date(s, 8))
         }
     }
 
     @discardableResult
-    func addMessage(novelID: UUID, conversationID: UUID, role: String, content: String, skill: String = "") -> Msg {
+    func addMessage(novelID: UUID, conversationID: UUID, role: String, content: String,
+                    skill: String = "", reasoning: String = "", reasoningDuration: Double = 0) -> Msg {
         let m = Msg(id: UUID(), novelID: novelID, conversationID: conversationID,
-                    role: role, content: content, skill: skill, createdAt: Date())
-        run("INSERT INTO messages(id,novel_id,conversation_id,role,content,skill,created_at) VALUES(?,?,?,?,?,?,?)",
-            m.id, m.novelID, m.conversationID, m.role, m.content, m.skill, m.createdAt)
+                    role: role, content: content, skill: skill,
+                    reasoning: reasoning, reasoningDuration: reasoningDuration, createdAt: Date())
+        run("INSERT INTO messages(id,novel_id,conversation_id,role,content,skill,reasoning,reasoning_duration,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            m.id, m.novelID, m.conversationID, m.role, m.content, m.skill,
+            m.reasoning, m.reasoningDuration, m.createdAt)
         touchConversation(id: conversationID)
         return m
     }
 
     func clearMessages(conversationID: UUID) { run("DELETE FROM messages WHERE conversation_id=?", conversationID) }
+
+    // MARK: - 跨会话后台运行
+
+    func conversationRuns() -> [ConversationRun] {
+        query("SELECT conversation_id,novel_id,status,prompt,agent_id,skill_id,partial_text,error,reserved_core_percent,reserved_memory_mb,started_at,updated_at FROM conversation_runs", []) { s in
+            ConversationRun(conversationID: uuid(s, 0)!, novelID: uuid(s, 1)!, status: text(s, 2) ?? "completed",
+                            prompt: text(s, 3) ?? "", agentID: uuid(s, 4), skillID: text(s, 5) ?? "chat",
+                            partialText: text(s, 6) ?? "", error: text(s, 7) ?? "",
+                            reservedCorePercent: int(s, 8), reservedMemoryMB: int(s, 9),
+                            startedAt: sqlite3_column_type(s, 10) == SQLITE_NULL ? nil : date(s, 10), updatedAt: date(s, 11))
+        }
+    }
+
+    func saveConversationRun(_ value: ConversationRun) {
+        run("""
+            INSERT INTO conversation_runs(conversation_id,novel_id,status,prompt,agent_id,skill_id,partial_text,error,reserved_core_percent,reserved_memory_mb,started_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(conversation_id) DO UPDATE SET novel_id=excluded.novel_id,status=excluded.status,
+              prompt=excluded.prompt,agent_id=excluded.agent_id,skill_id=excluded.skill_id,
+              partial_text=excluded.partial_text,error=excluded.error,reserved_core_percent=excluded.reserved_core_percent,
+              reserved_memory_mb=excluded.reserved_memory_mb,started_at=excluded.started_at,updated_at=excluded.updated_at
+            """, value.conversationID, value.novelID, value.status, value.prompt, value.agentID,
+            value.skillID, value.partialText, value.error, value.reservedCorePercent, value.reservedMemoryMB,
+            value.startedAt, value.updatedAt)
+    }
+
+    func deleteConversationRun(conversationID: UUID) {
+        run("DELETE FROM conversation_runs WHERE conversation_id=?", conversationID)
+    }
+
+    func recoverInterruptedConversationRuns() {
+        run("UPDATE conversation_runs SET status='failed',error='应用重启，后台任务已中断',updated_at=? WHERE status IN ('queued','running')", Date())
+    }
+
+    // MARK: - 创作结构对象
+
+    func storyNodes(novelID: UUID, kind: String? = nil) -> [StoryNode] {
+        let sql = kind == nil
+            ? "SELECT id,novel_id,kind,title,content,status,parent_id,sort_order,metadata_json,created_at,updated_at FROM story_nodes WHERE novel_id=? ORDER BY sort_order,created_at"
+            : "SELECT id,novel_id,kind,title,content,status,parent_id,sort_order,metadata_json,created_at,updated_at FROM story_nodes WHERE novel_id=? AND kind=? ORDER BY sort_order,created_at"
+        let args: [Any?] = kind == nil ? [novelID] : [novelID, kind]
+        return query(sql, args) { s in
+            StoryNode(id: uuid(s, 0)!, novelID: uuid(s, 1)!, kind: text(s, 2) ?? "note",
+                      title: text(s, 3) ?? "", content: text(s, 4) ?? "", status: text(s, 5) ?? "draft",
+                      parentID: uuid(s, 6), sortOrder: int(s, 7), metadataJSON: text(s, 8) ?? "{}",
+                      createdAt: date(s, 9), updatedAt: date(s, 10))
+        }
+    }
+
+    @discardableResult
+    func createStoryNode(novelID: UUID, kind: String, title: String, content: String = "",
+                         status: String = "draft", parentID: UUID? = nil, sortOrder: Int = 0,
+                         metadataJSON: String = "{}") -> StoryNode {
+        let value = StoryNode(id: UUID(), novelID: novelID, kind: kind, title: title, content: content,
+                              status: status, parentID: parentID, sortOrder: sortOrder,
+                              metadataJSON: metadataJSON, createdAt: Date(), updatedAt: Date())
+        run("INSERT INTO story_nodes(id,novel_id,kind,title,content,status,parent_id,sort_order,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            value.id, value.novelID, value.kind, value.title, value.content, value.status, value.parentID,
+            value.sortOrder, value.metadataJSON, value.createdAt, value.updatedAt)
+        return value
+    }
+
+    func updateStoryNode(id: UUID, kind: String? = nil, title: String? = nil, content: String? = nil,
+                         status: String? = nil, parentID: UUID? = nil, setParent: Bool = false,
+                         sortOrder: Int? = nil, metadataJSON: String? = nil) {
+        guard var value = query("SELECT id,novel_id,kind,title,content,status,parent_id,sort_order,metadata_json,created_at,updated_at FROM story_nodes WHERE id=?", [id], { s in
+            StoryNode(id: uuid(s, 0)!, novelID: uuid(s, 1)!, kind: text(s, 2) ?? "note", title: text(s, 3) ?? "",
+                      content: text(s, 4) ?? "", status: text(s, 5) ?? "draft", parentID: uuid(s, 6),
+                      sortOrder: int(s, 7), metadataJSON: text(s, 8) ?? "{}", createdAt: date(s, 9), updatedAt: date(s, 10))
+        }).first else { return }
+        if let kind { value.kind = kind }; if let title { value.title = title }; if let content { value.content = content }
+        if let status { value.status = status }; if setParent { value.parentID = parentID }
+        if let sortOrder { value.sortOrder = sortOrder }; if let metadataJSON { value.metadataJSON = metadataJSON }
+        run("UPDATE story_nodes SET kind=?,title=?,content=?,status=?,parent_id=?,sort_order=?,metadata_json=?,updated_at=? WHERE id=?",
+            value.kind, value.title, value.content, value.status, value.parentID, value.sortOrder,
+            value.metadataJSON, Date(), id)
+    }
+
+    func deleteStoryNode(id: UUID) { run("DELETE FROM story_nodes WHERE id=?", id) }
+
+    func restoreStoryNode(id: UUID, novelID: UUID, snapshot: [String: Any]) {
+        let kind = snapshot["kind"] as? String ?? "comment"
+        let title = snapshot["title"] as? String ?? ""
+        let content = snapshot["content"] as? String ?? ""
+        let status = snapshot["status"] as? String ?? "draft"
+        let parentID = (snapshot["parent_id"] as? String).flatMap(UUID.init(uuidString:))
+        let order = snapshot["sort_order"] as? Int ?? 0
+        let metadata = snapshot["metadata_json"] as? String ?? "{}"
+        if storyNodes(novelID: novelID).contains(where: { $0.id == id }) {
+            updateStoryNode(id: id, kind: kind, title: title, content: content, status: status,
+                            parentID: parentID, setParent: true, sortOrder: order, metadataJSON: metadata)
+        } else {
+            run("INSERT INTO story_nodes(id,novel_id,kind,title,content,status,parent_id,sort_order,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                id, novelID, kind, title, content, status, parentID, order, metadata, Date(), Date())
+        }
+    }
+
+    // MARK: - 内容版本
+
+    func addRevision(novelID: UUID, resourceType: String, resourceID: String, conversationID: UUID?,
+                     operation: String, snapshotJSON: String) {
+        run("INSERT INTO content_revisions(id,novel_id,resource_type,resource_id,conversation_id,operation,snapshot_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            UUID(), novelID, resourceType, resourceID, conversationID, operation, snapshotJSON, Date())
+    }
+
+    func revisions(novelID: UUID, resourceType: String? = nil, resourceID: String? = nil, limit: Int = 100) -> [ContentRevision] {
+        var sql = "SELECT id,novel_id,resource_type,resource_id,conversation_id,operation,snapshot_json,created_at FROM content_revisions WHERE novel_id=?"
+        var args: [Any?] = [novelID]
+        if let resourceType { sql += " AND resource_type=?"; args.append(resourceType) }
+        if let resourceID { sql += " AND resource_id=?"; args.append(resourceID) }
+        sql += " ORDER BY created_at DESC LIMIT ?"; args.append(max(1, min(limit, 500)))
+        return query(sql, args) { s in
+            ContentRevision(id: uuid(s, 0)!, novelID: uuid(s, 1)!, resourceType: text(s, 2) ?? "",
+                            resourceID: text(s, 3) ?? "", conversationID: uuid(s, 4), operation: text(s, 5) ?? "",
+                            snapshotJSON: text(s, 6) ?? "{}", createdAt: date(s, 7))
+        }
+    }
 
     // MARK: - 全文搜索
 

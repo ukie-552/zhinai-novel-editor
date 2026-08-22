@@ -15,7 +15,7 @@ struct Skill: Identifiable, Hashable {
     let icon: String
     let desc: String
     let category: SkillCategory
-    let system: String          // 追加到 Agent 系统提示词之后的技能指令
+    let system: String          // 仅在本轮调用时追加到 Agent 之后的任务/技能指令
     let needsText: Bool         // 是否需要目标文本（润色）
     let chapters: Int           // 注入前文章节数
     let fileURL: URL?
@@ -38,9 +38,9 @@ struct Skill: Identifiable, Hashable {
 
 let ALL_SKILLS: [Skill] = [
     // ── 创作 ──
-    Skill(id: "chat", name: "自由对话", icon: "bubble.left.and.bubble.right", desc: "与 AI 讨论剧情、人设与写法",
+    Skill(id: "chat", name: "普通对话", icon: "bubble.left.and.bubble.right", desc: "只使用当前 Agent，不附加任务指令",
           category: .write,
-          system: "与用户围绕当前作品进行创作讨论：讨论剧情、人设、世界观时严格基于参考设定；需要创作时直接给出高质量中文文本；回答简洁有条理。",
+          system: "",
           needsText: false, chapters: 1),
     Skill(id: "continue", name: "续写正文", icon: "square.and.pencil", desc: "紧接最新章节继续写作",
           category: .write,
@@ -93,7 +93,17 @@ let ALL_SKILLS: [Skill] = [
 ]
 
 func skillByID(_ id: String, skills: [Skill] = ALL_SKILLS) -> Skill {
-    skills.first { $0.id == id } ?? skills.first ?? ALL_SKILLS[0]
+    skills.first { $0.id == id }
+        ?? skills.first { $0.id == "chat" }
+        ?? ALL_SKILLS.first { $0.id == "chat" }!
+}
+
+/// Agent 可自行调取的 Skill 目录。固定 Skill 已经完整注入，因此不再列入按需索引。
+func indexedSkills(for agent: Agent, skills: [Skill]) -> [Skill] {
+    return skills.filter { skill in
+        skill.id != "chat"
+            && skill.id != agent.fixedSkillID
+    }
 }
 
 // MARK: - Markdown Skills
@@ -153,8 +163,10 @@ enum SkillStore {
     @discardableResult
     static func save(existing: Skill?, name: String, desc: String, category: SkillCategory,
                      icon: String, needsText: Bool, chapters: Int, markdown: String) throws -> Skill {
-        let preferredID = existing?.isMarkdown == true ? existing!.id : slug(name)
-        let id = uniqueID(preferredID, excluding: existing?.fileURL)
+        // 编辑已有 Markdown Skill 时 ID 必须稳定，否则 Agent 白名单和工具引用会失效。
+        let id = existing?.isMarkdown == true
+            ? existing!.id
+            : uniqueID(slug(name), excluding: nil)
         let url = existing?.fileURL ?? directory.appendingPathComponent(id).appendingPathExtension("md")
         let text = """
         ---
@@ -177,6 +189,26 @@ enum SkillStore {
     static func delete(_ skill: Skill) throws {
         guard let url = skill.fileURL else { return }
         try FileManager.default.removeItem(at: url)
+    }
+
+    /// 导入外部 Markdown Skill。先解析校验，再以新的稳定 ID 写入本地目录，
+    /// 因此同名文件不会覆盖已有技能，内置技能 ID 也不会发生冲突。
+    @discardableResult
+    static func importFile(_ sourceURL: URL) throws -> Skill {
+        guard sourceURL.pathExtension.lowercased() == "md" else {
+            throw SkillStoreError.unsupportedFile
+        }
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
+        guard let source = parse(sourceURL) else { throw SkillStoreError.invalidMarkdown }
+        return try save(existing: nil,
+                        name: source.name,
+                        desc: source.desc,
+                        category: source.category,
+                        icon: source.icon,
+                        needsText: source.needsText,
+                        chapters: source.chapters,
+                        markdown: source.system)
     }
 
     private static func uniqueID(_ value: String, excluding: URL?) -> String {
@@ -211,7 +243,14 @@ enum SkillStore {
 
 enum SkillStoreError: LocalizedError {
     case invalidMarkdown
-    var errorDescription: String? { "Markdown Skill 缺少有效正文" }
+    case unsupportedFile
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidMarkdown: return "Markdown Skill 缺少有效正文或无法读取"
+        case .unsupportedFile: return "仅支持 .md 文件"
+        }
+    }
 }
 
 private extension String {
@@ -231,14 +270,18 @@ func activateLorebook(entries: [Entry], scanText: String) -> [Entry] {
     }
 }
 
-// MARK: - Token 估算（粗略：中文≈2字/token，英文≈4字符/token）
+// MARK: - Token 估算
+/// 不同厂商 tokenizer 并不一致。这里采用偏保守的本地上界近似：
+/// 非 ASCII 标量按 1 token、ASCII 按约 4 字符/token，再预留少量消息开销。
+/// 宁可略早触发压缩，也不让中文、日文、韩文或 emoji 被明显低估。
 
 func estimateTokens(_ s: String) -> Int {
-    var cjk = 0, other = 0
-    for ch in s.unicodeScalars {
-        if ch.value >= 0x4E00 && ch.value <= 0x9FFF { cjk += 1 } else { other += 1 }
+    var ascii = 0
+    var nonASCII = 0
+    for scalar in s.unicodeScalars {
+        if scalar.isASCII { ascii += 1 } else { nonASCII += 1 }
     }
-    return cjk / 2 + other / 4 + 1
+    return nonASCII + (ascii + 3) / 4 + 4
 }
 
 // MARK: - 上下文预算（防上下文爆炸）
@@ -252,7 +295,18 @@ struct ContextPlan {
     var chapterCount = 0
     var historyTokens = 0
     var historyCount = 0
-    var totalTokens: Int { novelInfoTokens + loreTokens + chaptersTokens + historyTokens }
+    var originalTokens = 0
+    var compressedTokens: Int?
+    var protectedContentExceededBudget = false
+    var requestExceedsInputBudget = false
+    var inputBudget = 0
+    var totalTokens: Int { compressedTokens ?? (novelInfoTokens + loreTokens + chaptersTokens + historyTokens) }
+    var compressionSavedTokens: Int { max(0, originalTokens - totalTokens) }
+    var compressionPercent: Int {
+        guard originalTokens > 0 else { return 0 }
+        return Int((Double(compressionSavedTokens) / Double(originalTokens) * 100).rounded())
+    }
+    var compressionApplied: Bool { compressionSavedTokens > 0 }
 }
 
 enum ContextLimits {
@@ -273,21 +327,247 @@ struct GenContext {
     let userText: String
     let targetText: String
     let skill: Skill
+    /// Agent 固定绑定的 Skill。它只扩展 Agent 的长期行为，不改变本轮消息类型。
+    let fixedSkill: Skill?
+    /// 仅包含名称与说明的轻量目录；Agent 需要时通过 get_skill 获取完整正文。
+    let indexedSkills: [Skill]
+
+    init(novel: Novel, chapters: [Chapter], entries: [Entry], history: [Msg],
+         userText: String, targetText: String, skill: Skill,
+         fixedSkill: Skill? = nil, indexedSkills: [Skill] = []) {
+        self.novel = novel
+        self.chapters = chapters
+        self.entries = entries
+        self.history = history
+        self.userText = userText
+        self.targetText = targetText
+        self.skill = skill
+        self.fixedSkill = fixedSkill
+        self.indexedSkills = indexedSkills
+    }
+}
+
+struct ContextCompressionResult {
+    let text: String
+    let originalTokens: Int
+    let finalTokens: Int
+    let protectedTokens: Int
+    let protectedContentExceededBudget: Bool
+}
+
+/// 面向小说的本地抽取式压缩：稀有度近似自信息，查询重合度衡量相关性，
+/// 再以 MMR 风格相似度阈值去重。高优先级设定、标题和最新片段强制保留。
+enum NovelContextCompressor {
+    private struct Unit {
+        let index: Int
+        let text: String
+        let terms: Set<String>
+        let tokens: Int
+        let protected: Bool
+        var score: Double
+    }
+
+    static func compress(_ text: String, query: String, maxTokens: Int,
+                         level: ContextCompressionLevel) -> ContextCompressionResult {
+        let original = estimateTokens(text)
+        guard original > maxTokens, maxTokens > 0 else {
+            return ContextCompressionResult(text: text, originalTokens: original, finalTokens: original,
+                                            protectedTokens: 0, protectedContentExceededBudget: false)
+        }
+
+        let pieces = splitUnits(text)
+        guard !pieces.isEmpty else {
+            return ContextCompressionResult(text: text, originalTokens: original, finalTokens: original,
+                                            protectedTokens: 0, protectedContentExceededBudget: false)
+        }
+
+        let queryTerms = terms(in: query)
+        var documentFrequency: [String: Int] = [:]
+        let unitTerms = pieces.map { terms(in: $0) }
+        for set in unitTerms {
+            for term in set { documentFrequency[term, default: 0] += 1 }
+        }
+
+        let protectedWords = ["必须", "不得", "禁止", "硬规则", "高优先级"]
+        let protectedSectionNames = ["作者长期意图", "当前 1–3 章聚焦", "本书硬规则", "设定库 · 已激活条目", "最新章节结尾"]
+        var units: [Unit] = []
+        var inProtectedSection = false
+        for (index, piece) in pieces.enumerated() {
+            if piece.hasPrefix("【") {
+                inProtectedSection = protectedSectionNames.contains(where: piece.contains)
+            }
+            let set = unitTerms[index]
+            let rarity = set.isEmpty ? 0 : set.reduce(0.0) { value, term in
+                value + log(Double(pieces.count + 1) / Double((documentFrequency[term] ?? 0) + 1))
+            } / Double(set.count)
+            let overlap = set.intersection(queryTerms).count
+            let relevance = queryTerms.isEmpty ? 0 : Double(overlap) / sqrt(Double(max(1, set.count)))
+            let structural = (piece.contains("【") || piece.contains("——第") || piece.contains("〔")) ? 2.4 : 0
+            let recency = Double(index) / Double(max(1, pieces.count - 1)) * 1.2
+            let edge = (index == 0 || index >= pieces.count - 2) ? 2.0 : 0
+            let isProtected = inProtectedSection || piece.contains("〔")
+                || protectedWords.contains(where: piece.contains) || index >= pieces.count - 2
+            let score = rarity * 0.75 + relevance * 5.0 + structural + recency + edge
+            units.append(Unit(index: index, text: piece, terms: set, tokens: estimateTokens(piece),
+                              protected: isProtected, score: score))
+        }
+
+        var selected: [Unit] = []
+        var usedTokens = 0
+        for unit in units where unit.protected {
+            selected.append(unit)
+            usedTokens += unit.tokens
+        }
+        let protectedTokens = usedTokens
+        // 给说明行留少量空间；受保护内容本身超限时宁可明确超预算，也不静默裁掉硬规则。
+        let selectionBudget = max(1, maxTokens - 36)
+
+        let ranked = units.filter { !$0.protected }.sorted {
+            if $0.score == $1.score { return $0.index > $1.index }
+            return $0.score > $1.score
+        }
+        var deferred: [Unit] = []
+        for unit in ranked where usedTokens + unit.tokens <= selectionBudget {
+            let similarity = selected.suffix(80).map { jaccard(unit.terms, $0.terms) }.max() ?? 0
+            if similarity <= level.redundancyThreshold {
+                selected.append(unit)
+                usedTokens += unit.tokens
+            } else {
+                deferred.append(unit)
+            }
+        }
+        for unit in deferred where usedTokens + unit.tokens <= selectionBudget {
+            selected.append(unit)
+            usedTokens += unit.tokens
+        }
+
+        let output = selected.sorted { $0.index < $1.index }.map(\.text).joined(separator: "\n")
+        let contentTokens = estimateTokens(output)
+        let overflow = protectedTokens > selectionBudget
+        let status = overflow ? "；受保护内容超过目标预算，未裁切" : ""
+        let note = "〔上下文压缩：约 \(original) → \(contentTokens) tokens，节省 \(max(0, original - contentTokens) * 100 / max(1, original))%\(status)〕\n"
+        let finalText = note + output
+        return ContextCompressionResult(text: finalText, originalTokens: original,
+                                        finalTokens: estimateTokens(finalText),
+                                        protectedTokens: protectedTokens,
+                                        protectedContentExceededBudget: overflow)
+    }
+
+    private static func splitUnits(_ text: String) -> [String] {
+        var result: [String] = []
+        var buffer = ""
+        let boundaries: Set<Character> = ["。", "！", "？", "!", "?", "；", ";", "\n"]
+        for character in text {
+            buffer.append(character)
+            if boundaries.contains(character) || buffer.count >= 600 {
+                let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { result.append(trimmed) }
+                buffer = ""
+            }
+        }
+        let tail = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { result.append(tail) }
+        return result
+    }
+
+    private static func terms(in text: String) -> Set<String> {
+        let lowered = text.lowercased()
+        var result: Set<String> = []
+        var ascii = ""
+        var cjk: [Character] = []
+
+        func flushASCII() {
+            if ascii.count >= 2 { result.insert(ascii) }
+            ascii = ""
+        }
+        func flushCJK() {
+            if cjk.count == 1 { result.insert(String(cjk[0])) }
+            if cjk.count >= 2 {
+                for index in 0..<(cjk.count - 1) {
+                    result.insert(String(cjk[index...index + 1]))
+                }
+            }
+            cjk.removeAll(keepingCapacity: true)
+        }
+
+        for character in lowered {
+            if character.isASCII && (character.isLetter || character.isNumber) {
+                flushCJK()
+                ascii.append(character)
+            } else if character.unicodeScalars.allSatisfy({ $0.value >= 0x3400 && $0.value <= 0x9FFF }) {
+                flushASCII()
+                cjk.append(character)
+            } else {
+                flushASCII()
+                flushCJK()
+            }
+        }
+        flushASCII()
+        flushCJK()
+        return result
+    }
+
+    private static func jaccard(_ lhs: Set<String>, _ rhs: Set<String>) -> Double {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return 0 }
+        return Double(lhs.intersection(rhs).count) / Double(lhs.union(rhs).count)
+    }
+
 }
 
 /// 组装最终请求：返回 (system, messages, plan)。
 /// system 不含 Agent 人格（由调用方前置注入），此处为 作品信息 + 世界书 + 前文 + 技能指令。
-func buildRequest(ctx: GenContext) -> (system: String, messages: [ChatMsg], plan: ContextPlan) {
+func buildRequest(ctx: GenContext, tokenBudget: Int? = nil,
+                  compressionLevel: ContextCompressionLevel? = nil,
+                  compressionTargetRetention: Double? = nil,
+                  reservedInputTokens: Int = 0) -> (system: String, messages: [ChatMsg], plan: ContextPlan) {
     var plan = ContextPlan()
     var L: [String] = []
+    let usesCompression = tokenBudget != nil && compressionLevel != nil
+    func content(_ value: String, legacyMax: Int) -> String {
+        usesCompression ? value : String(value.prefix(legacyMax))
+    }
 
-    // 作品信息
+    // 作品信息。公共会话的“未选书”状态由一次性事件承载，这里不重复注入。
     var infoLines: [String] = []
-    if !ctx.novel.title.isEmpty { infoLines.append("当前作品：《\(ctx.novel.title)》") }
-    if !ctx.novel.desc.isEmpty { infoLines.append("作品简介：\(String(ctx.novel.desc.prefix(ContextLimits.descMax)))") }
+    if ctx.novel.id != GLOBAL_CHAT_NOVEL_ID, !ctx.novel.title.isEmpty {
+        infoLines.append("当前作品：《\(ctx.novel.title)》")
+        infoLines.append("book_id：\(ctx.novel.id.uuidString)")
+    }
+    let meta = ctx.novel.metadata
+    let configParts = ctx.novel.id == GLOBAL_CHAT_NOVEL_ID ? [] : [
+        meta.genres.first.map { "题材：\($0)" },
+        meta.platform == "other" ? nil : "目标平台：\(meta.platform)",
+        "语言：\(meta.language)",
+        "状态：\(meta.status)",
+        "目标：\(meta.targetChapters) 章，每章约 \(meta.chapterWordCount) 字"
+    ].compactMap { $0 }
+    if !configParts.isEmpty { infoLines.append(configParts.joined(separator: "｜")) }
+    if ctx.novel.id != GLOBAL_CHAT_NOVEL_ID, !ctx.novel.desc.isEmpty { infoLines.append("作品简介：\(content(ctx.novel.desc, legacyMax: ContextLimits.descMax))") }
+    if !meta.authorIntent.isEmpty {
+        infoLines.append("【作者长期意图（高优先级）】")
+        infoLines.append(content(meta.authorIntent, legacyMax: 3000))
+    }
+    if !meta.currentFocus.isEmpty {
+        infoLines.append("【当前 1–3 章聚焦（高于卷纲）】")
+        infoLines.append(content(meta.currentFocus, legacyMax: 2000))
+    }
+    if !meta.storyFrame.isEmpty {
+        infoLines.append("【故事框架】")
+        infoLines.append(content(meta.storyFrame, legacyMax: 5000))
+    }
     if !ctx.novel.outline.isEmpty {
-        infoLines.append("故事大纲：")
-        infoLines.append(String(ctx.novel.outline.prefix(ContextLimits.outlineMax)))
+        infoLines.append("【卷纲 / 故事大纲】")
+        infoLines.append(content(ctx.novel.outline, legacyMax: ContextLimits.outlineMax))
+    }
+    if !meta.bookRules.isEmpty {
+        infoLines.append("【本书硬规则（必须遵守）】")
+        infoLines.append(content(meta.bookRules, legacyMax: 3000))
+    }
+    if let libraryID = UUID(uuidString: meta.styleLibraryID),
+       let profile = VectorStore().styleProfile(libraryID: libraryID) {
+        let strengthLabel = meta.styleStrength >= 0.8 ? "强" : (meta.styleStrength <= 0.4 ? "弱" : "中等")
+        infoLines.append("【去 AI 味写法指导｜强度：\(strengthLabel)】")
+        infoLines.append(profile)
     }
     if !infoLines.isEmpty {
         plan.novelInfoTokens = estimateTokens(infoLines.joined(separator: "\n"))
@@ -301,7 +581,7 @@ func buildRequest(ctx: GenContext) -> (system: String, messages: [ChatMsg], plan
         var count = 0
         for e in ctx.entries {
             let line = "〔\(count + 1)〕\(entryTypeLabel(e.type))｜\(e.title)：\(e.content)"
-            if used + line.count > ContextLimits.loreTotalMax || count >= ContextLimits.loreCountMax { break }
+            if !usesCompression && (used + line.count > ContextLimits.loreTotalMax || count >= ContextLimits.loreCountMax) { break }
             loreLines.append(line)
             used += line.count
             count += 1
@@ -317,7 +597,11 @@ func buildRequest(ctx: GenContext) -> (system: String, messages: [ChatMsg], plan
         var chapterLines: [String] = ["【前文（创作时须与之一致并自然衔接）】"]
         for c in ctx.chapters {
             chapterLines.append("——第 \(c.no) 章 \(c.title)——")
-            chapterLines.append(String(c.content.prefix(ContextLimits.chapterMax)))
+            chapterLines.append(content(c.content, legacyMax: ContextLimits.chapterMax))
+        }
+        if usesCompression, let latest = ctx.chapters.last, !latest.content.isEmpty {
+            chapterLines.append("【最新章节结尾（续写衔接，强制保留）】")
+            chapterLines.append(String(latest.content.suffix(2400)))
         }
         plan.chaptersTokens = estimateTokens(chapterLines.joined(separator: "\n"))
         plan.chapterCount = ctx.chapters.count
@@ -325,26 +609,134 @@ func buildRequest(ctx: GenContext) -> (system: String, messages: [ChatMsg], plan
         L.append(contentsOf: chapterLines)
     }
 
-    // Agent 系统提示词 + 技能指令由上层注入（在 system 中），这里补技能指令
-    if !ctx.skill.system.isEmpty {
+    // 固定 Skill 属于 Agent 的长期能力；按需 Skill 只属于这一轮。固定项先注入，
+    // 两者相同时只保留一份，避免重复指令放大权重。
+    if let fixedSkill = ctx.fixedSkill, !fixedSkill.system.isEmpty {
         L.append("")
+        L.append("【Agent 固定 Skill：\(fixedSkill.name)】")
+        L.append(fixedSkill.system)
+        if fixedSkill.needsText, !ctx.targetText.isEmpty {
+            L.append("【固定 Skill 的目标文本】")
+            L.append(ctx.targetText)
+        }
+    }
+    if !ctx.skill.system.isEmpty, ctx.skill.id != ctx.fixedSkill?.id {
+        L.append("")
+        L.append("【本轮按需任务 / Skill：\(ctx.skill.name)】")
         L.append(ctx.skill.system)
+    }
+    if !ctx.indexedSkills.isEmpty {
+        L.append("")
+        L.append("【可按需调取的 Skill 索引】")
+        L.append("以下内容只是能力目录，不是当前任务指令。仅当用户任务明确需要某项能力时，调用 get_skill(skill_id) 读取完整正文，再按其指令完成任务；不要同时加载无关 Skill。")
+        for skill in ctx.indexedSkills {
+            L.append("- \(skill.id)｜\(skill.name)｜\(skill.category.rawValue)｜\(skill.desc)")
+        }
+    }
+
+    let rawSystem = L.joined(separator: "\n")
+    let isChat = ctx.skill.id == "chat"
+    let userMessage = isChat ? ctx.userText : buildUserMessage(ctx)
+    let rawSystemTokens = estimateTokens(rawSystem)
+    let rawHistoryTokens = isChat ? estimateTokens(ctx.history.map { $0.content }.joined(separator: "\n")) : 0
+    let userTokens = estimateTokens(userMessage)
+    plan.originalTokens = rawSystemTokens + rawHistoryTokens + userTokens + max(0, reservedInputTokens)
+
+    let query = [ctx.userText, ctx.targetText, ctx.novel.title, ctx.novel.metadata.currentFocus,
+                 ctx.entries.map { "\($0.title) \($0.keywords)" }.joined(separator: " ")]
+        .joined(separator: "\n")
+    let finalSystem: String
+    var historyBudget: Int? = nil
+    if let tokenBudget, let compressionLevel {
+        plan.inputBudget = tokenBudget
+        // 4% 留给消息包装、工具定义及不同厂商 tokenizer 的估算误差。
+        let safeInputBudget = max(256, Int(Double(tokenBudget) * 0.96))
+        let availableContextBudget = max(1, safeInputBudget - userTokens - max(0, reservedInputTokens))
+        let rawContextTokens = rawSystemTokens + rawHistoryTokens
+        let retention = min(0.95, max(0.10,
+            compressionTargetRetention ?? compressionLevel.targetRetentionRatio))
+        // 达到配置输入窗口的 80% 即提前压缩，避免流式请求在包装后才发现超限。
+        let triggerTokens = max(1, Int(Double(tokenBudget) * 0.80))
+        let shouldCompress = plan.originalTokens >= triggerTokens
+        let targetContextTokens = shouldCompress
+            ? min(availableContextBudget, max(1, Int(Double(rawContextTokens) * retention)))
+            : rawContextTokens
+
+        let systemBudget: Int
+        if isChat, shouldCompress, rawHistoryTokens > 0 {
+            let recent = Array(ctx.history.suffix(8))
+            let protectedRecentTokens = estimateTokens(recent.map { $0.content }.joined(separator: "\n"))
+            let olderHistoryTokens = max(0, rawHistoryTokens - protectedRecentTokens)
+            let variableDemand = rawSystemTokens + olderHistoryTokens
+            let remainingAfterRecent = max(0, targetContextTokens - protectedRecentTokens)
+            let proportionalSystem = variableDemand == 0 ? 0
+                : Int(Double(remainingAfterRecent) * Double(rawSystemTokens) / Double(variableDemand))
+            systemBudget = max(1, min(rawSystemTokens, proportionalSystem))
+            let allocatedHistory = max(protectedRecentTokens, targetContextTokens - systemBudget)
+            historyBudget = min(rawHistoryTokens, allocatedHistory)
+        } else {
+            systemBudget = shouldCompress ? targetContextTokens : rawSystemTokens
+            historyBudget = isChat ? rawHistoryTokens : nil
+        }
+        let systemCompression = NovelContextCompressor.compress(rawSystem, query: query,
+                                                                 maxTokens: systemBudget, level: compressionLevel)
+        finalSystem = systemCompression.text
+        plan.protectedContentExceededBudget = systemCompression.protectedContentExceededBudget
+    } else {
+        finalSystem = rawSystem
     }
 
     // 历史与用户消息
     if ctx.skill.id == "chat" {
         var msgs: [ChatMsg] = []
-        let history = ctx.history.suffix(ContextLimits.historyCountMax)
-        for m in history {
-            msgs.append(ChatMsg(role: m.role == "user" ? "user" : "assistant",
-                                content: String(m.content.prefix(ContextLimits.historyMsgMax))))
+        if let historyBudget, let compressionLevel,
+           rawHistoryTokens > historyBudget, ctx.history.count > 8 {
+            let recent = Array(ctx.history.suffix(8))
+            let older = ctx.history.dropLast(recent.count).map {
+                let content = $0.role == "assistant" ? ModelOutputParser.parse($0.content).response : $0.content
+                return "【\($0.role == "user" ? "用户" : "助手")】\(content)"
+            }.joined(separator: "\n")
+            let recentTokens = estimateTokens(recent.map {
+                $0.role == "assistant" ? ModelOutputParser.parse($0.content).response : $0.content
+            }.joined(separator: "\n"))
+            let memoryBudget = max(0, historyBudget - recentTokens - 24)
+            if memoryBudget >= 64 {
+                let memoryCompression = NovelContextCompressor.compress(
+                    older, query: query, maxTokens: memoryBudget, level: compressionLevel
+                )
+                plan.protectedContentExceededBudget = plan.protectedContentExceededBudget
+                    || memoryCompression.protectedContentExceededBudget
+                msgs.append(ChatMsg(role: "user", content: "【较早对话压缩记忆】\n\(memoryCompression.text)"))
+            }
+            for m in recent {
+                let visibleContent = m.role == "assistant" ? ModelOutputParser.parse(m.content).response : m.content
+                msgs.append(ChatMsg(role: m.role == "assistant" ? "assistant" : "user",
+                                    content: m.role == "event" ? "【系统状态事件】\(visibleContent)" : visibleContent))
+            }
+            plan.historyCount = recent.count + (memoryBudget >= 64 ? 1 : 0)
+        } else {
+            let history = usesCompression ? ctx.history[...] : ctx.history.suffix(ContextLimits.historyCountMax)[...]
+            for m in history {
+                let cleanContent = m.role == "assistant" ? ModelOutputParser.parse(m.content).response : m.content
+                let value = usesCompression ? cleanContent : String(cleanContent.prefix(ContextLimits.historyMsgMax))
+                msgs.append(ChatMsg(role: m.role == "assistant" ? "assistant" : "user",
+                                    content: m.role == "event" ? "【系统状态事件】\(value)" : value))
+            }
+            plan.historyCount = history.count
         }
-        plan.historyTokens = estimateTokens(history.map { $0.content }.joined(separator: "\n"))
-        plan.historyCount = history.count
-        msgs.append(ChatMsg(role: "user", content: ctx.userText))
-        return (L.joined(separator: "\n"), msgs, plan)
+        plan.historyTokens = estimateTokens(msgs.map { $0.content }.joined(separator: "\n"))
+        msgs.append(ChatMsg(role: "user", content: userMessage))
+        plan.compressedTokens = estimateTokens(finalSystem) + plan.historyTokens + userTokens + max(0, reservedInputTokens)
+        if plan.inputBudget > 0 {
+            plan.requestExceedsInputBudget = plan.totalTokens > Int(Double(plan.inputBudget) * 0.96)
+        }
+        return (finalSystem, msgs, plan)
     }
-    return (L.joined(separator: "\n"), [ChatMsg(role: "user", content: buildUserMessage(ctx))], plan)
+    plan.compressedTokens = estimateTokens(finalSystem) + estimateTokens(userMessage) + max(0, reservedInputTokens)
+    if plan.inputBudget > 0 {
+        plan.requestExceedsInputBudget = plan.totalTokens > Int(Double(plan.inputBudget) * 0.96)
+    }
+    return (finalSystem, [ChatMsg(role: "user", content: userMessage)], plan)
 }
 
 func buildUserMessage(_ ctx: GenContext) -> String {
