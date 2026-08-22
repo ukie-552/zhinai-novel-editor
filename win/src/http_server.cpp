@@ -1,0 +1,434 @@
+// http_server.cpp - 用 cpp-httplib 暴露 REST API + 静态资源
+#include "http_server.h"
+#include "db.h"
+#include "llm.h"
+#include "skills.h"
+#include "vector_store.h"
+#include "config.h"
+#include "platform.h"
+
+#define CPPHTTPLIB_THREAD_POOL_COUNT 8
+#include <httplib.h>
+#include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace zhinai::http {
+
+namespace {
+
+using nlohmann::json;
+
+httplib::Server* asImpl(void* p) { return reinterpret_cast<httplib::Server*>(p); }
+
+void setCORS(httplib::Response& res) {
+    // 前端是同源的 (127.0.0.1:port), 无需 CORS. 留空, 避免奇怪的浏览器策略.
+}
+
+// -- helpers --
+json bookToJson(const db::Book& b) {
+    return {
+        {"id", b.id}, {"title", b.title}, {"author", b.author},
+        {"summary", b.summary}, {"createdAt", b.createdAt}, {"updatedAt", b.updatedAt}
+    };
+}
+json chapterToJson(const db::Chapter& c) {
+    return {
+        {"id", c.id}, {"bookId", c.bookId}, {"orderIndex", c.orderIndex},
+        {"title", c.title}, {"content", c.content}, {"updatedAt", c.updatedAt}
+    };
+}
+json loreToJson(const db::LoreEntry& e) {
+    return {
+        {"id", e.id}, {"kind", e.kind}, {"name", e.name},
+        {"content", e.content}, {"keywords", e.keywords}, {"updatedAt", e.updatedAt}
+    };
+}
+json agentToJson(const db::Agent& a) {
+    return {
+        {"id", a.id}, {"name", a.name}, {"prompt", a.prompt},
+        {"model", a.model}, {"skill", a.skill}, {"toolGroups", a.toolGroups}
+    };
+}
+json convToJson(const db::Conversation& c) {
+    return {
+        {"id", c.id}, {"title", c.title}, {"agentId", c.agentId},
+        {"bookId", c.bookId}, {"createdAt", c.createdAt}
+    };
+}
+json msgToJson(const db::Message& m) {
+    return {
+        {"id", m.id}, {"convId", m.convId}, {"role", m.role},
+        {"content", m.content}, {"createdAt", m.createdAt}
+    };
+}
+
+void registerBooks(httplib::Server& s) {
+    s.Get("/api/books", [](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (auto& b : db::listBooks()) arr.push_back(bookToJson(b));
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post("/api/books", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; res.set_content("{\"error\":\"bad json\"}", "application/json"); return; }
+        auto id = db::createBook(j.value("title", "未命名"), j.value("author", ""), j.value("summary", ""));
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Get(R"(/api/books/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto b = db::getBook(id);
+        if (!b) { res.status = 404; return; }
+        res.set_content(bookToJson(*b).dump(), "application/json");
+    });
+    s.Put(R"(/api/books/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        bool ok = db::updateBook(id, j.value("title", ""), j.value("author", ""), j.value("summary", ""));
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/books/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteBook(id)}}.dump(), "application/json");
+    });
+}
+
+void registerChapters(httplib::Server& s) {
+    s.Get(R"(/api/books/(\d+)/chapters)", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        json arr = json::array();
+        for (auto& c : db::listChapters(id)) arr.push_back(chapterToJson(c));
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post(R"(/api/books/(\d+)/chapters)", [](const httplib::Request& req, httplib::Response& res) {
+        auto bookId = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        int order = j.value("orderIndex", (int)db::listChapters(bookId).size());
+        auto id = db::createChapter(bookId, order, j.value("title", "新章节"));
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Get(R"(/api/chapters/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto c = db::getChapter(id);
+        if (!c) { res.status = 404; return; }
+        res.set_content(chapterToJson(*c).dump(), "application/json");
+    });
+    s.Put(R"(/api/chapters/(\d+)/content)", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded() || !j.contains("content")) { res.status = 400; return; }
+        bool ok = db::updateChapterContent(id, j["content"].get<std::string>());
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Put(R"(/api/chapters/(\d+)/title)", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        bool ok = db::updateChapterTitle(id, j.value("title", ""));
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Post(R"(/api/books/(\d+)/chapters/reorder)", [](const httplib::Request& req, httplib::Response& res) {
+        auto bookId = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded() || !j.contains("ids") || !j["ids"].is_array()) { res.status = 400; return; }
+        std::vector<long long> ids;
+        for (auto& v : j["ids"]) ids.push_back(v.get<long long>());
+        bool ok = db::reorderChapters(bookId, ids);
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/chapters/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteChapter(id)}}.dump(), "application/json");
+    });
+}
+
+void registerLore(httplib::Server& s) {
+    s.Get("/api/lore", [](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (auto& e : db::listLore()) arr.push_back(loreToJson(e));
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post("/api/lore", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto id = db::createLore(j.value("kind", "other"), j.value("name", ""),
+                                  j.value("content", ""), j.value("keywords", ""));
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Put(R"(/api/lore/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        bool ok = db::updateLore(id, j.value("kind", "other"), j.value("name", ""),
+                                  j.value("content", ""), j.value("keywords", ""));
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/lore/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteLore(id)}}.dump(), "application/json");
+    });
+    s.Post("/api/lore/match", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        std::string text = j.value("text", "");
+        json arr = json::array();
+        for (auto& e : db::findLoreByKeywords(text)) arr.push_back(loreToJson(e));
+        res.set_content(arr.dump(), "application/json");
+    });
+}
+
+void registerAgents(httplib::Server& s) {
+    s.Get("/api/agents", [](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (auto& a : db::listAgents()) arr.push_back(agentToJson(a));
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post("/api/agents", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        db::Agent a;
+        a.id = j.value("id", 0LL);
+        a.name = j.value("name", "");
+        a.prompt = j.value("prompt", "");
+        a.model = j.value("model", "");
+        a.skill = j.value("skill", "");
+        a.toolGroups = j.value("toolGroups", "");
+        auto id = db::upsertAgent(a);
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/agents/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteAgent(id)}}.dump(), "application/json");
+    });
+}
+
+void registerConversations(httplib::Server& s) {
+    s.Get("/api/conversations", [](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (auto& c : db::listConversions()) arr.push_back(convToJson(c));
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post("/api/conversations", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto id = db::createConversation(j.value("title", "新对话"),
+                                          j.value("agentId", 0LL),
+                                          j.value("bookId", 0LL));
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/conversations/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteConversation(id)}}.dump(), "application/json");
+    });
+    s.Get(R"(/api/conversations/(\d+)/messages)", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        json arr = json::array();
+        for (auto& m : db::listMessages(id)) arr.push_back(msgToJson(m));
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post(R"(/api/conversations/(\d+)/messages)", [](const httplib::Request& req, httplib::Response& res) {
+        auto convId = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto id = db::appendMessage(convId, j.value("role", "user"), j.value("content", ""));
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+}
+
+void registerLLM(httplib::Server& s) {
+    // 测试连接
+    s.Post("/api/llm/test", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        llm::Config cfg;
+        cfg.baseURL = j.value("baseURL", "");
+        cfg.apiKey = j.value("apiKey", "");
+        cfg.model = j.value("model", "");
+        cfg.timeoutSec = j.value("timeoutSec", 15);
+        llm::Request r{cfg, {{"user", "ping"}}, 0.0, 16};
+        auto resp = llm::chat(r);
+        res.set_content(json{{"ok", resp.ok}, {"error", resp.error}, {"content", resp.content}}.dump(),
+                        "application/json");
+    });
+
+    // 同步对话
+    s.Post("/api/llm/chat", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto cfg = config::loadConfig();
+        llm::Config c;
+        c.baseURL = j.value("baseURL", cfg.value("baseURL", ""));
+        c.apiKey = j.value("apiKey", cfg.value("apiKey", ""));
+        c.model = j.value("model", cfg.value("model", ""));
+        c.timeoutSec = j.value("timeoutSec", 60);
+        llm::Request r;
+        r.cfg = c;
+        r.temperature = j.value("temperature", 0.7);
+        r.maxTokens = j.value("maxTokens", 0);
+        if (j.contains("messages") && j["messages"].is_array()) {
+            for (auto& m : j["messages"]) {
+                r.messages.push_back({m.value("role", "user"), m.value("content", "")});
+            }
+        }
+        auto resp = llm::chat(r);
+        res.set_content(json{{"ok", resp.ok}, {"content", resp.content}, {"error", resp.error}}.dump(),
+                        "application/json");
+    });
+
+    // 流式对话 (SSE)
+    s.Post("/api/llm/chat/stream", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto cfg = config::loadConfig();
+        llm::Config c;
+        c.baseURL = j.value("baseURL", cfg.value("baseURL", ""));
+        c.apiKey = j.value("apiKey", cfg.value("apiKey", ""));
+        c.model = j.value("model", cfg.value("model", ""));
+        c.timeoutSec = j.value("timeoutSec", 60);
+        llm::Request r;
+        r.cfg = c;
+        r.temperature = j.value("temperature", 0.7);
+        r.maxTokens = j.value("maxTokens", 0);
+        if (j.contains("messages") && j["messages"].is_array()) {
+            for (auto& m : j["messages"]) {
+                r.messages.push_back({m.value("role", "user"), m.value("content", "")});
+            }
+        }
+        std::string err;
+        res.set_header("Content-Type", "text/event-stream");
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("Connection", "keep-alive");
+        // 简化: 整段拼完再返回, 真流式需要 chunked provider; 第一版够用.
+        std::string full;
+        llm::chatStream(r, [&](const std::string& d) {
+            full += d;
+            return true;
+        }, err);
+        if (!err.empty()) {
+            res.body = "data: " + json{{"error", err}}.dump() + "\n\n";
+        } else {
+            res.body = "data: " + json{{"done", true}, {"content", full}}.dump() + "\n\n";
+        }
+    });
+}
+
+void registerSkills(httplib::Server& s) {
+    s.Get("/api/skills", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(skills::listAsJson().dump(), "application/json");
+    });
+    s.Get(R"(/api/skills/([^/]+))", [](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        res.set_content(json{{"name", name}, {"content", skills::read(name)}}.dump(), "application/json");
+    });
+}
+
+void registerVectors(httplib::Server& s) {
+    s.Post("/api/vectors/import", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        std::string source = j.value("source", "");
+        std::string text = j.value("text", "");
+        vector::importText(source, text);
+        res.set_content(vector::stats().dump(), "application/json");
+    });
+    s.Post("/api/vectors/search", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        std::string q = j.value("query", "");
+        int topK = j.value("topK", 5);
+        json arr = json::array();
+        for (auto& h : vector::search(q, topK)) {
+            arr.push_back({{"source", h.source}, {"snippet", h.snippet}, {"score", h.score}});
+        }
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Get("/api/vectors/stats", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(vector::stats().dump(), "application/json");
+    });
+}
+
+void registerConfig(httplib::Server& s) {
+    s.Get("/api/config", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(config::loadConfig().dump(), "application/json");
+    });
+    s.Put("/api/config", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        config::saveConfig(j);
+        res.set_content(R"({"ok":true})", "application/json");
+    });
+}
+
+void registerStatic(httplib::Server& s, const std::string& webDir) {
+    if (!s.set_mount_point("/", webDir)) {
+        platform::log("WARN", "static mount failed: " + webDir);
+    }
+    s.Get("/", [webDir](const httplib::Request&, httplib::Response& res) {
+        std::ifstream f((std::filesystem::path(webDir) / "index.html").string(), std::ios::binary);
+        if (!f) { res.status = 404; return; }
+        std::stringstream ss; ss << f.rdbuf();
+        res.set_content(ss.str(), "text/html; charset=utf-8");
+    });
+}
+
+}  // namespace
+
+bool start(Server& s, const std::string& webDir, int& outPort) {
+    auto* impl = new httplib::Server();
+    s.impl = impl;
+
+    registerBooks(*impl);
+    registerChapters(*impl);
+    registerLore(*impl);
+    registerAgents(*impl);
+    registerConversations(*impl);
+    registerLLM(*impl);
+    registerSkills(*impl);
+    registerVectors(*impl);
+    registerConfig(*impl);
+    registerStatic(*impl, webDir);
+
+    impl->set_exception_handler([](const httplib::Request&, httplib::Response& res, std::exception_ptr ep) {
+        std::string msg = "internal error";
+        try { if (ep) std::rethrow_exception(ep); }
+        catch (const std::exception& e) { msg = e.what(); }
+        catch (...) {}
+        res.status = 500;
+        res.set_content(json{{"error", msg}}.dump(), "application/json");
+    });
+
+    // 找空闲端口: 从 8090 开始
+    int port = 8090;
+    for (int tries = 0; tries < 50; ++tries) {
+        if (impl->bind_to_port("127.0.0.1", port)) break;
+        port++;
+    }
+    s.port = port;
+    outPort = port;
+
+    s.running = true;
+    s.th = std::thread([impl, port]() {
+        platform::log("INFO", "http server listening on 127.0.0.1:" + std::to_string(port));
+        impl->listen_after_bind();
+    });
+
+    // 等服务起来
+    for (int i = 0; i < 100; ++i) {
+        if (impl->is_running()) break;
+        Sleep(20);
+    }
+    return impl->is_running();
+}
+
+void stop(Server& s) {
+    if (!s.impl) return;
+    auto* impl = asImpl(s.impl);
+    impl->stop();
+    if (s.th.joinable()) s.th.join();
+    delete impl;
+    s.impl = nullptr;
+    s.running = false;
+}
+
+}  // namespace zhinai::http
