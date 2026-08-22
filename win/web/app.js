@@ -1157,9 +1157,13 @@ async function renderSkillsSidebar(sb) {
 }
 async function renderSkills() {
   const list = await api.skills.list();
-  const wrap = $('#skillList'); wrap.innerHTML = '';
+  const wrap = $('#skillList');
+  // 顶上加"新建技能"按钮
+  wrap.innerHTML = '<div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn-primary" id="newSkillBtn">＋ 新建 Markdown 技能</button></div><div id="skillCards"></div>';
+  document.getElementById('newSkillBtn').addEventListener('click', () => showSkillEditorModal(null));
+  const cards = document.getElementById('skillCards');
   if (!list || !list.length) {
-    wrap.innerHTML = '<div style="color:var(--text-soft);font-size:12.5px">还没有技能. 在 <code>%APPDATA%\\ZhinaiNovelEditor\\skills\\&lt;name&gt;\\SKILL.md</code> 里写一个.</div>';
+    cards.innerHTML = '<div style="color:var(--text-soft);font-size:12.5px">还没有技能. 点上面新建一个, 或在 <code>%APPDATA%\\ZhinaiNovelEditor\\skills\\&lt;name&gt;\\SKILL.md</code> 里手写.</div>';
     return;
   }
   for (const s of list) {
@@ -1167,10 +1171,111 @@ async function renderSkills() {
     el.className = 'card';
     el.innerHTML = `<div style="font-size:14px;font-weight:600">🧩 ${escapeHtml(s.name)}</div>
       <div style="font-size:11.5px;color:var(--text-soft);margin-top:2px">${escapeHtml(s.path || '')}</div>
-      <div style="font-size:12.5px;color:var(--text-soft);margin-top:6px;line-height:1.5">${escapeHtml(s.summary || '')}</div>`;
-    wrap.appendChild(el);
+      <div style="font-size:12.5px;color:var(--text-soft);margin-top:6px;line-height:1.5">${escapeHtml(s.summary || '')}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button class="btn-link" data-act="edit">编辑</button>
+        <button class="btn-link danger" data-act="del">删除</button>
+      </div>`;
+    el.querySelector('[data-act="edit"]').addEventListener('click', () => showSkillEditorModal(s));
+    el.querySelector('[data-act="del"]').addEventListener('click', async () => {
+      if (!confirm('删除技能 "' + s.name + '"? 会删掉 ' + s.path)) return;
+      await fetch('/api/skills/' + encodeURIComponent(s.name), { method: 'DELETE' });
+      showToast('已删除');
+      renderSkills(); renderSkillsSidebar($('#sidebar')); renderAIMenu();
+    });
+    cards.appendChild(el);
   }
   renderSkillsSidebar($('#sidebar'));
+}
+
+function showSkillEditorModal(skill) {
+  const isEdit = !!skill;
+  const name = skill ? skill.name : '';
+  const summary = skill ? skill.summary : '';
+  // 解析 frontmatter 不在前端做, 简化: 拉 read 全文
+  Promise.resolve(skill ? fetch('/api/skills/' + encodeURIComponent(skill.name)).then(r => r.json()) : { content: '# 我的新技能\n\n写明这个技能做什么, 怎么调用 LLM 完成任务.' })
+    .then((data) => {
+      const markdown = data.content || '';
+      let modal = document.getElementById('skillEditModal');
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'skillEditModal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999';
+        document.body.appendChild(modal);
+      }
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;max-width:720px;width:90%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+            <strong style="font-size:14px">${isEdit ? '编辑 Markdown 技能' : '新建 Markdown 技能'}</strong>
+            <span style="flex:1"></span>
+            <button class="btn-icon" id="seClose">✕</button>
+          </div>
+          <div style="padding:16px 20px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <label class="field"><span>技能名 (id, 英文/数字) <span style="color:#b91c1c">*</span></span>
+                <input id="seName" value="${escapeHtml(name)}" ${isEdit ? 'readonly style="background:rgba(0,0,0,0.05);color:var(--text-soft)"' : ''} placeholder="例如 my-skill" />
+              </label>
+              <label class="field"><span>分类</span>
+                <select id="seCategory">
+                  <option value="write">创作</option>
+                  <option value="world">设定</option>
+                  <option value="analyze">分析</option>
+                </select>
+              </label>
+            </div>
+            <label class="field"><span>说明 (一句话)</span>
+              <input id="seDesc" value="${escapeHtml(summary)}" placeholder="这个技能做什么" />
+            </label>
+            <div style="display:grid;grid-template-columns:120px 120px 1fr;gap:10px;align-items:center">
+              <label class="field" style="display:flex;align-items:center;gap:6px;margin:0">
+                <input type="checkbox" id="seNeedsText" style="width:auto" />
+                <span style="font-size:12px">需要目标文本</span>
+              </label>
+              <label class="field" style="margin:0"><span>注入前文 (章)</span>
+                <input type="number" id="seChapters" min="0" max="10" value="0" />
+              </label>
+              <label class="field" style="margin:0"><span>图标 (emoji)</span>
+                <input id="seIcon" value="📄" maxlength="2" />
+              </label>
+            </div>
+            <label class="field" style="flex:1;display:flex;flex-direction:column;min-height:0"><span>技能指令 (Markdown, 加到 Agent 系统提示词)</span>
+              <textarea id="seMarkdown" style="flex:1;min-height:280px;font:13px/1.6 ui-monospace,Menlo,monospace;resize:vertical">${escapeHtml(markdown)}</textarea>
+            </label>
+          </div>
+          <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn-secondary" id="seCancel">取消</button>
+            <button class="btn-primary" id="seSave">保存 .md</button>
+          </div>
+        </div>
+      `;
+      modal.style.display = 'flex';
+      const close = () => { modal.style.display = 'none'; };
+      modal.querySelector('#seClose').onclick = close;
+      modal.querySelector('#seCancel').onclick = close;
+      modal.querySelector('#seSave').onclick = async () => {
+        const nm = $('#seName').value.trim();
+        if (!nm) { showToast('技能名必填', true); return; }
+        const payload = {
+          name: nm,
+          desc: $('#seDesc').value.trim(),
+          category: $('#seCategory').value,
+          icon: $('#seIcon').value.trim() || '📄',
+          needsText: $('#seNeedsText').checked,
+          chapters: parseInt($('#seChapters').value, 10) || 0,
+          markdown: $('#seMarkdown').value,
+        };
+        const r = await fetch('/api/skills/save', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const j = await r.json();
+        if (!j.ok) { showToast('保存失败', true); return; }
+        close();
+        showToast(isEdit ? '已保存' : '已创建');
+        renderSkills(); renderSkillsSidebar($('#sidebar')); renderAIMenu();
+      };
+      setTimeout(() => $('#seName').focus(), 30);
+    });
 }
 
 // ---- Settings ----

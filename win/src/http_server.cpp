@@ -481,6 +481,24 @@ void registerSkills(httplib::Server& s) {
         std::string name = req.matches[1];
         res.set_content(json{{"name", name}, {"content", skills::read(name)}}.dump(), "application/json");
     });
+
+    // 保存 Markdown 技能
+    s.Post("/api/skills/save", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        bool ok = skills::save(
+            j.value("name", ""), j.value("desc", ""), j.value("category", "write"),
+            j.value("icon", "doc.text"), j.value("needsText", false),
+            j.value("chapters", 0), j.value("markdown", "")
+        );
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+
+    // 删除 Markdown 技能
+    s.Delete(R"(/api/skills/([^/]+))", [](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        res.set_content(json{{"ok", skills::remove(name)}}.dump(), "application/json");
+    });
 }
 
 void registerVectors(httplib::Server& s) {
