@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(zhinai_novel_editor_win LANGUAGES CXX)
+project(zhinai_novel_editor_win LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
 #  织奈编辑器 Windows 移植版 (C++ + WebView2)
@@ -17,10 +17,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
 
 if(MSVC)
     add_compile_options(/W3 /utf-8 /permissive- /EHsc)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+    # WIN32_LEAN_AND_MEAN / NOMINMAX 由 webview.h 自己 define, 这里不重复
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
-set(APP_NAME "织奈编辑器")
+set(APP_NAME "zhinai_editor")
 
 # ---------------------------------------------------------------------------
 #  Single-header deps
@@ -62,17 +63,18 @@ endif()
 file(GLOB APP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/src/*.cpp
 )
+# 永远排除 db_stub.cpp - 它只在 SQLite 不可用时才加回来
+list(REMOVE_ITEM APP_SOURCES ${CMAKE_SOURCE_DIR}/src/db_stub.cpp)
 
 if(ZHINAI_HAS_SQLITE)
     add_executable(${APP_NAME} WIN32 ${APP_SOURCES})
+    set_target_properties(${APP_NAME} PROPERTIES OUTPUT_NAME "织奈编辑器")
     target_compile_definitions(${APP_NAME} PRIVATE ZHINAI_HAS_SQLITE=1)
 else()
     # SQLite 不可用, 用 db_stub 替换 db.cpp
-    file(GLOB APP_SOURCES_NO_DB
-        ${CMAKE_SOURCE_DIR}/src/*.cpp
-    )
-    list(REMOVE_ITEM APP_SOURCES_NO_DB ${CMAKE_SOURCE_DIR}/src/db.cpp)
-    add_executable(${APP_NAME} WIN32 ${APP_SOURCES_NO_DB} ${CMAKE_SOURCE_DIR}/src/db_stub.cpp)
+    list(REMOVE_ITEM APP_SOURCES ${CMAKE_SOURCE_DIR}/src/db.cpp)
+    add_executable(${APP_NAME} WIN32 ${APP_SOURCES} ${CMAKE_SOURCE_DIR}/src/db_stub.cpp)
+    set_target_properties(${APP_NAME} PROPERTIES OUTPUT_NAME "织奈编辑器")
 endif()
 
 target_include_directories(${APP_NAME} PRIVATE
@@ -81,7 +83,11 @@ target_include_directories(${APP_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
     ${CMAKE_SOURCE_DIR}/third_party/nlohmann
     ${CMAKE_SOURCE_DIR}/third_party/webview/include
+    ${CMAKE_SOURCE_DIR}/third_party/webview2/native/include
 )
+
+# WebView2Loader 静态链: 用 .lib 即可, 不需要 .dll 跟 EXE
+set(WEBVIEW2_LIB ${CMAKE_SOURCE_DIR}/third_party/webview2/native/x64/WebView2LoaderStatic.lib)
 
 target_link_libraries(${APP_NAME} PRIVATE
     sqlite3
@@ -96,6 +102,8 @@ target_link_libraries(${APP_NAME} PRIVATE
     crypt32
     winhttp
     webservices
+    # WebView2 (静态)
+    ${WEBVIEW2_LIB}
 )
 
 # ---------------------------------------------------------------------------

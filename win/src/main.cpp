@@ -5,6 +5,13 @@
 //   3) 把 server 逻辑通过 webview bind 暴露给前端 (异步 RPC)
 //   4) WebView2 加载 http://127.0.0.1:PORT/
 //   5) 用户关窗口 -> 停 server -> 退出
+
+// 顺序: winsock2 必须在 windows.h 之前, 否则 ws2tcpip.h 缺 IP_MSFILTER 等
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <mstcpip.h>
+#include <windows.h>
+
 #include "platform.h"
 #include "http_server.h"
 #include "webview_app.h"
@@ -154,7 +161,7 @@ std::string dispatch(const std::string& reqJson) {
 
 }  // namespace
 
-int wmain(int /*argc*/, wchar_t* /*argv*/[]) {
+int WINAPI wWinMain(HINSTANCE /*hInst*/, HINSTANCE /*hPrev*/, wchar_t* /*cmd*/, int /*show*/) {
     installSignalHandlers();
     zhinai::platform::log("INFO", "starting " + std::string(zhinai::platform::kAppTitle()));
 

@@ -14,7 +14,7 @@ $build = Join-Path $root 'build'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 
 # 拼一段在 vcvars64 环境里跑的 cmake 命令
-$cmd = "call `"$vcvars`" && cd /d `"$root`" && cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release"
+$cmd = "call `"$vcvars`" && cd /d `"$root`" && cmake -S . -B build -A x64 && cmake --build build --config Release"
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 

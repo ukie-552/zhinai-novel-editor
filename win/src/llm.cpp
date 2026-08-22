@@ -2,8 +2,8 @@
 // 流式: 解析 SSE, 每次拿到一段 delta 调 callback.
 #include "llm.h"
 #include "platform.h"
-#include <winhttp.h>
 #include <windows.h>
+#include <winhttp.h>
 #include <nlohmann/json.hpp>
 #include <regex>
 #include <sstream>

@@ -17,3 +17,7 @@ xcuserdata/
 .idea/
 .vscode/
 *.swp
+
+# Win/ third-party fetched deps (use win/scripts/fetch_deps.ps1 to set up)
+win/third_party/
+win/build/
