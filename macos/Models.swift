@@ -350,21 +350,46 @@ struct Agent: Identifiable, Codable, Equatable {
 struct AgentIconView: View {
     let icon: String
     var avatarPath: String? = nil
+    var size: CGFloat = 44
 
     var body: some View {
-        if let avatarPath,
-           FileManager.default.fileExists(atPath: avatarPath),
-           let image = NSImage(contentsOfFile: avatarPath) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
-                .clipped()
-        } else if icon.unicodeScalars.count == 1 || icon.containsEmoji {
-            Text(icon)
-        } else {
-            Image(systemName: icon)
+        Group {
+            if let avatarPath,
+               FileManager.default.fileExists(atPath: avatarPath),
+               let image = agentAvatarThumbnail(atPath: avatarPath, size: size) {
+                Image(nsImage: image)
+            } else if icon.unicodeScalars.count == 1 || icon.containsEmoji {
+                Text(icon)
+            } else {
+                Image(systemName: icon)
+            }
         }
+        .frame(width: size, height: size)
+        .clipped()
     }
+}
+
+/// 先把头像绘制为控件所需的实际尺寸，规避 macOS Menu 标签按原图尺寸溢出绘制。
+private func agentAvatarThumbnail(atPath path: String, size: CGFloat) -> NSImage? {
+    guard size > 0, let source = NSImage(contentsOfFile: path) else { return nil }
+    let sourceSize = source.size
+    guard sourceSize.width > 0, sourceSize.height > 0 else { return nil }
+
+    let cropSide = min(sourceSize.width, sourceSize.height)
+    let sourceRect = NSRect(x: (sourceSize.width - cropSide) / 2,
+                            y: (sourceSize.height - cropSide) / 2,
+                            width: cropSide,
+                            height: cropSide)
+    let targetSize = NSSize(width: size, height: size)
+    let target = NSImage(size: targetSize)
+    target.lockFocus()
+    NSGraphicsContext.current?.imageInterpolation = .high
+    source.draw(in: NSRect(origin: .zero, size: targetSize),
+                from: sourceRect,
+                operation: .copy,
+                fraction: 1)
+    target.unlockFocus()
+    return target
 }
 
 extension String {
@@ -377,28 +402,32 @@ let AGENT_ICON_CHOICES = ["🤖", "🧙", "✍️", "🎭", "📚", "🖋️", "
                           "❄️", "🌸", "🐉", "🦊", "👻", "🧛", "🗡️", "🏰", "⚓️", "🧪", "💎", "👑",
                           "sparkles", "pencil.circle", "bolt.fill", "globe.asia.australia", "book.fill", "wand.and.stars"]
 
+private func builtinAgentAvatarPath(_ name: String) -> String? {
+    Bundle.main.path(forResource: name, ofType: "png", inDirectory: "AgentAvatars")
+}
+
 let BUILTIN_AGENTS: [Agent] = [
     Agent(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-          name: "创作助手", icon: "🤖",
+          name: "创作助手", icon: "🤖", avatarPath: builtinAgentAvatarPath("creative-assistant"),
           systemPrompt: "你是一位资深的中文长篇小说作家与编辑，文笔细腻、结构严谨，擅长网文与严肃文学。"
             + "与用户围绕当前作品进行创作：讨论剧情、人设、世界观时严格基于参考设定；需要创作时直接给出高质量中文文本；回答简洁有条理。",
           model: nil, temperature: nil, topP: nil, maxTokens: nil,
           tools: nil, skills: nil, loreEntryIDs: nil, isBuiltin: true),
     Agent(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
-          name: "严苛编辑", icon: "🖋️",
+          name: "严苛编辑", icon: "🖋️", avatarPath: builtinAgentAvatarPath("strict-editor"),
           systemPrompt: "你是一位极为挑剔的资深文学编辑，眼毒、嘴毒、心善。"
             + "指出作品在节奏、逻辑、人物动机、语言上的问题，不留情面但给出具体可操作的修改建议；"
             + "点评要短句有力，避免空话套话。",
           model: nil, temperature: 0.6, topP: nil, maxTokens: nil,
           tools: nil, skills: ["consistency", "polish", "chat"], loreEntryIDs: nil, isBuiltin: true),
     Agent(id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
-          name: "网文速写师", icon: "⚡",
+          name: "网文速写师", icon: "⚡", avatarPath: builtinAgentAvatarPath("web-fiction-writer"),
           systemPrompt: "你擅长商业网文创作，深谙黄金三章、爽点节奏、钩子设计。"
             + "行文快节奏、强冲突、画面感强；每章结尾必有钩子；对话简洁有张力；适当使用短段落。",
           model: nil, temperature: 0.9, topP: nil, maxTokens: nil,
           tools: nil, skills: ["continue", "scene", "chat"], loreEntryIDs: nil, isBuiltin: true),
     Agent(id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
-          name: "世界构建师", icon: "🌍",
+          name: "世界构建师", icon: "🌍", avatarPath: builtinAgentAvatarPath("world-builder"),
           systemPrompt: "你是严谨的世界观架构师，擅长设定推演与逻辑自洽。"
             + "构建力量体系、地理、势力、历史时注重因果链与细节闭环；发现设定矛盾时直接指出并给出修补方案。",
           model: nil, temperature: 0.7, topP: nil, maxTokens: nil,

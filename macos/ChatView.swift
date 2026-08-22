@@ -62,7 +62,9 @@ struct ChatView: View {
                 Button("管理 Agent…") { app.showAgentSheet = true }
             } label: {
                 HStack(spacing: 4) {
-                    AgentIconView(icon: app.currentAgent.icon, avatarPath: app.currentAgent.avatarPath)
+                    AgentIconView(icon: app.currentAgent.icon,
+                                  avatarPath: app.currentAgent.avatarPath,
+                                  size: 14)
                         .font(.system(size: 10))
                         .frame(width: 14, height: 14)
                         .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
@@ -371,13 +373,24 @@ struct MessageRow: View {
         }
     }
 
+    @ViewBuilder
     private var avatar: some View {
-        Image(systemName: msg.role == "assistant" ? "book.closed.fill" : "person.fill")
-            .font(.system(size: 11))
-            .frame(width: 26, height: 26)
-            .background(msg.role == "assistant" ? Color.accentColor.opacity(0.25) : Color.green.opacity(0.2),
-                        in: Circle())
-            .foregroundStyle(msg.role == "assistant" ? Color.accentColor : Color.green)
+        if msg.role == "assistant" {
+            AgentIconView(icon: app.currentAgent.icon,
+                          avatarPath: app.currentAgent.avatarPath,
+                          size: 26)
+                .font(.system(size: 11))
+                .frame(width: 26, height: 26)
+                .background(Color.accentColor.opacity(0.18), in: Circle())
+                .clipShape(Circle())
+                .overlay { Circle().strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5) }
+        } else {
+            Image(systemName: "person.fill")
+                .font(.system(size: 11))
+                .frame(width: 26, height: 26)
+                .background(Color.green.opacity(0.2), in: Circle())
+                .foregroundStyle(Color.green)
+        }
     }
 
     private var bubble: some View {

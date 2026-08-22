@@ -57,6 +57,9 @@ cp "$BUILD_DIR/icon.icns" "$APP/Contents/Resources/AppIcon.icns"
 echo "==> 写入默认背景…"
 cp "$ROOT/assets/DefaultBackground.jpeg" "$APP/Contents/Resources/DefaultBackground.jpeg"
 
+echo "==> 写入内置 Agent 头像…"
+cp -R "$ROOT/assets/AgentAvatars" "$APP/Contents/Resources/AgentAvatars"
+
 echo "==> 本地签名…"
 codesign --force --sign - "$APP" 2>/dev/null || true
 

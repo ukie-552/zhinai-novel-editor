@@ -345,6 +345,7 @@ struct AgentSheet: View {
                         ),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                     )
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .strokeBorder(Color.accentColor.opacity(0.18), lineWidth: 1)
