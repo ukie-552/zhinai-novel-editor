@@ -64,8 +64,9 @@ json loreToJson(const db::LoreEntry& e) {
 }
 json agentToJson(const db::Agent& a) {
     return {
-        {"id", a.id}, {"name", a.name}, {"prompt", a.prompt},
-        {"model", a.model}, {"skill", a.skill}, {"toolGroups", a.toolGroups}
+        {"id", a.id}, {"name", a.name}, {"icon", a.icon}, {"prompt", a.prompt},
+        {"model", a.model}, {"skill", a.skill},
+        {"toolGroups", a.toolGroups}, {"loreIds", a.loreIds}
     };
 }
 json convToJson(const db::Conversation& c) {

@@ -125,6 +125,23 @@ static void migrateBooksMetadata(sqlite3* db) {
     if (!hasColumn("genres"))          sqlite3_exec(db, "ALTER TABLE books ADD COLUMN genres TEXT", nullptr, nullptr, nullptr);
 }
 
+// 增量迁移: 给 agents 加 icon / lore_ids
+static void migrateAgents(sqlite3* db) {
+    auto hasColumn = [&](const char* col) -> bool {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, "PRAGMA table_info(agents)", -1, &st, nullptr) != SQLITE_OK) return false;
+        bool found = false;
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const unsigned char* name = sqlite3_column_text(st, 1);
+            if (name && std::string(reinterpret_cast<const char*>(name)) == col) { found = true; break; }
+        }
+        sqlite3_finalize(st);
+        return found;
+    };
+    if (!hasColumn("icon"))      sqlite3_exec(db, "ALTER TABLE agents ADD COLUMN icon TEXT", nullptr, nullptr, nullptr);
+    if (!hasColumn("lore_ids"))   sqlite3_exec(db, "ALTER TABLE agents ADD COLUMN lore_ids TEXT", nullptr, nullptr, nullptr);
+}
+
 }  // namespace
 
 bool init() {
@@ -141,6 +158,7 @@ bool init() {
     exec("PRAGMA journal_mode = WAL;");
     exec(kSchema);
     migrateBooksMetadata(g_db);
+    migrateAgents(g_db);
     platform::log("INFO", "db.init: " + path);
     return true;
 }
@@ -409,36 +427,33 @@ std::vector<LoreEntry> findLoreByKeywords(const std::string& text) {
 }
 
 // ---- Agent ----
+static void fillAgentFromStmt(Agent& a, sqlite3_stmt* st) {
+    a.id = sqlite3_column_int64(st, 0);
+    a.name = colText(st, 1);
+    a.icon = colText(st, 2);
+    a.prompt = colText(st, 3);
+    a.model = colText(st, 4);
+    a.skill = colText(st, 5);
+    a.toolGroups = colText(st, 6);
+    a.loreIds = colText(st, 7);
+}
+
 std::vector<Agent> listAgents() {
     std::lock_guard<std::mutex> lk(g_mtx);
     std::vector<Agent> out;
-    PREP("SELECT id,name,prompt,model,skill,tool_groups FROM agents ORDER BY id")
+    PREP("SELECT id,name,icon,prompt,model,skill,tool_groups,lore_ids FROM agents ORDER BY id")
     while (sqlite3_step(st.p) == SQLITE_ROW) {
-        Agent a;
-        a.id = sqlite3_column_int64(st.p, 0);
-        a.name = colText(st.p, 1);
-        a.prompt = colText(st.p, 2);
-        a.model = colText(st.p, 3);
-        a.skill = colText(st.p, 4);
-        a.toolGroups = colText(st.p, 5);
-        out.push_back(std::move(a));
+        Agent a; fillAgentFromStmt(a, st.p); out.push_back(std::move(a));
     }
     return out;
 }
 
 std::optional<Agent> getAgent(long long id) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    PREP("SELECT id,name,prompt,model,skill,tool_groups FROM agents WHERE id=?")
+    PREP("SELECT id,name,icon,prompt,model,skill,tool_groups,lore_ids FROM agents WHERE id=?")
     sqlite3_bind_int64(st.p, 1, id);
     if (sqlite3_step(st.p) == SQLITE_ROW) {
-        Agent a;
-        a.id = sqlite3_column_int64(st.p, 0);
-        a.name = colText(st.p, 1);
-        a.prompt = colText(st.p, 2);
-        a.model = colText(st.p, 3);
-        a.skill = colText(st.p, 4);
-        a.toolGroups = colText(st.p, 5);
-        return a;
+        Agent a; fillAgentFromStmt(a, st.p); return a;
     }
     return std::nullopt;
 }
@@ -446,22 +461,26 @@ std::optional<Agent> getAgent(long long id) {
 long long upsertAgent(const Agent& a) {
     std::lock_guard<std::mutex> lk(g_mtx);
     if (a.id > 0) {
-        PREP("UPDATE agents SET name=?,prompt=?,model=?,skill=?,tool_groups=? WHERE id=?")
+        PREP("UPDATE agents SET name=?,icon=?,prompt=?,model=?,skill=?,tool_groups=?,lore_ids=? WHERE id=?")
         bindText(st.p, 1, a.name);
-        bindText(st.p, 2, a.prompt);
-        bindText(st.p, 3, a.model);
-        bindText(st.p, 4, a.skill);
-        bindText(st.p, 5, a.toolGroups);
-        sqlite3_bind_int64(st.p, 6, a.id);
+        bindText(st.p, 2, a.icon);
+        bindText(st.p, 3, a.prompt);
+        bindText(st.p, 4, a.model);
+        bindText(st.p, 5, a.skill);
+        bindText(st.p, 6, a.toolGroups);
+        bindText(st.p, 7, a.loreIds);
+        sqlite3_bind_int64(st.p, 8, a.id);
         sqlite3_step(st.p);
         return a.id;
     }
-    PREP("INSERT INTO agents(name,prompt,model,skill,tool_groups) VALUES(?,?,?,?,?)")
+    PREP("INSERT INTO agents(name,icon,prompt,model,skill,tool_groups,lore_ids) VALUES(?,?,?,?,?,?,?)")
     bindText(st.p, 1, a.name);
-    bindText(st.p, 2, a.prompt);
-    bindText(st.p, 3, a.model);
-    bindText(st.p, 4, a.skill);
-    bindText(st.p, 5, a.toolGroups);
+    bindText(st.p, 2, a.icon);
+    bindText(st.p, 3, a.prompt);
+    bindText(st.p, 4, a.model);
+    bindText(st.p, 5, a.skill);
+    bindText(st.p, 6, a.toolGroups);
+    bindText(st.p, 7, a.loreIds);
     if (sqlite3_step(st.p) != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(g_db);
 }

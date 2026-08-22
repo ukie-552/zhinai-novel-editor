@@ -77,10 +77,12 @@ std::vector<LoreEntry> findLoreByKeywords(const std::string& text);
 struct Agent {
     long long id = 0;
     std::string name;
+    std::string icon;        // emoji 或字符
     std::string prompt;
     std::string model;
-    std::string skill;  // 单一技能名
+    std::string skill;       // 单一技能名
     std::string toolGroups;  // 逗号分隔: read,write,llm...
+    std::string loreIds;     // 逗号分隔, 固定挂载的 lore entry id
 };
 std::vector<Agent> listAgents();
 std::optional<Agent> getAgent(long long id);

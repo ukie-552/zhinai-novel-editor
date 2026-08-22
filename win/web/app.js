@@ -931,10 +931,10 @@ async function renderAgents() {
     el.className = 'card';
     el.innerHTML = `
       <div class="agent-card">
-        <div class="avatar"><img src="${avatarFor(a)}" alt=""></div>
+        <div class="avatar" style="background:linear-gradient(135deg,#e7e5e4,#d6d3d1);display:flex;align-items:center;justify-content:center;font-size:28px">${escapeHtml(a.icon || '🤖')}</div>
         <div class="info">
           <div class="name">${escapeHtml(a.name)}</div>
-          <div class="meta">模型: ${escapeHtml(a.model || '(默认)')} · 技能: ${escapeHtml(a.skill || '-')}</div>
+          <div class="meta">模型: ${escapeHtml(a.model || '(默认)')} · 技能: ${escapeHtml(a.skill || '-')}${a.loreIds ? ' · 已挂载设定' : ''}</div>
           <div class="desc">${escapeHtml(a.prompt || '(无提示词)')}</div>
         </div>
       </div>
@@ -955,12 +955,98 @@ async function renderAgents() {
   renderAgentsSidebar($('#sidebar'));
 }
 async function editAgentFlow(a) {
-  const name = prompt('Agent 名称', a ? a.name : ''); if (name === null) return;
-  const model = prompt('模型 (留空用默认)', a ? a.model : '') ?? '';
-  const skill = prompt('固定技能名 (留空不用)', a ? a.skill : '') ?? '';
-  const prompt = prompt('系统提示词', a ? a.prompt : '') ?? '';
-  await api.agents.save({ id: a ? a.id : 0, name, model, skill, prompt, toolGroups: a ? a.toolGroups : '' });
-  renderAgents(); renderAgentsSidebar($('#sidebar'));
+  showAgentModal(a);
+}
+
+function showAgentModal(agent) {
+  const isEdit = !!agent;
+  const a = agent || { name: '', icon: '🤖', prompt: '', model: '', skill: '', loreIds: '' };
+  let modal = document.getElementById('agentModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'agentModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999';
+    document.body.appendChild(modal);
+  }
+  // 拉 skill catalog + lore list
+  Promise.all([api.skills.catalog(), api.lore.list()]).then(([catalog, lore]) => {
+    const skillOptions = catalog.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+    const loreList = lore || [];
+    const selectedLore = new Set((a.loreIds || '').split(',').filter(Boolean).map(Number));
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:680px;width:90%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <strong style="font-size:14px">${isEdit ? '编辑 Agent' : '新建 Agent'}</strong>
+          <span style="flex:1"></span>
+          <button class="btn-icon" id="agentModalClose">✕</button>
+        </div>
+        <div style="padding:18px 22px;display:flex;flex-direction:column;gap:12px;overflow:auto">
+          <div style="display:grid;grid-template-columns:80px 1fr;gap:10px;align-items:center">
+            <label class="field"><span>图标 (emoji)</span>
+              <input id="amIcon" value="${escapeHtml(a.icon || '🤖')}" maxlength="2" style="text-align:center;font-size:20px" />
+            </label>
+            <label class="field"><span>名称 <span style="color:#b91c1c">*</span></span>
+              <input id="amName" value="${escapeHtml(a.name || '')}" placeholder="例如: 网文爽文写手" />
+            </label>
+          </div>
+          <label class="field"><span>系统提示词 (人设 + 风格)</span>
+            <textarea id="amPrompt" rows="6" style="font:13px/1.6 ui-monospace,Menlo,monospace;min-height:120px;resize:vertical" placeholder="你是... 擅长...">${escapeHtml(a.prompt || '')}</textarea>
+          </label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <label class="field"><span>模型 (留空用默认)</span>
+              <input id="amModel" value="${escapeHtml(a.model || '')}" placeholder="gpt-4o-mini" />
+            </label>
+            <label class="field"><span>固定技能 (每轮自动注入)</span>
+              <select id="amSkill">
+                <option value="">(不用)</option>
+                ${skillOptions}
+              </select>
+            </label>
+          </div>
+          <label class="field"><span>固定挂载设定 (始终加入上下文)</span>
+            <div id="amLoreList" style="max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px;background:rgba(255,255,255,0.6)">
+              ${loreList.length ? loreList.map(l => `
+                <label style="display:flex;gap:6px;align-items:center;padding:3px 0;font-size:12.5px;cursor:pointer">
+                  <input type="checkbox" data-lore-id="${l.id}" ${selectedLore.has(l.id) ? 'checked' : ''} style="width:auto" />
+                  <span style="color:var(--text-soft);font-size:11px">${escapeHtml(l.kind)}</span>
+                  <span>${escapeHtml(l.name)}</span>
+                </label>
+              `).join('') : '<div style="color:var(--text-soft);font-size:12px">还没有设定, 先去设定库建</div>'}
+            </div>
+          </label>
+        </div>
+        <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" id="agentModalCancel">取消</button>
+          <button class="btn-primary" id="agentModalSave">${isEdit ? '保存' : '创建'}</button>
+        </div>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    $('#amSkill').value = a.skill || '';
+    const close = () => { modal.style.display = 'none'; };
+    modal.querySelector('#agentModalClose').onclick = close;
+    modal.querySelector('#agentModalCancel').onclick = close;
+    modal.querySelector('#agentModalSave').onclick = async () => {
+      const name = $('#amName').value.trim();
+      if (!name) { showToast('名称必填', true); return; }
+      const loreIds = Array.from(modal.querySelectorAll('[data-lore-id]:checked')).map(el => el.dataset.loreId).join(',');
+      const payload = {
+        id: a.id || 0,
+        name,
+        icon: $('#amIcon').value.trim() || '🤖',
+        prompt: $('#amPrompt').value,
+        model: $('#amModel').value.trim(),
+        skill: $('#amSkill').value,
+        toolGroups: a.toolGroups || '',
+        loreIds,
+      };
+      await api.agents.save(payload);
+      close();
+      showToast(isEdit ? '已保存' : '已创建');
+      renderAgents(); renderAgentsSidebar($('#sidebar'));
+    };
+    setTimeout(() => $('#amName').focus(), 30);
+  });
 }
 
 // ---- Search ----
