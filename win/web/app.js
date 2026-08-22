@@ -88,6 +88,7 @@ const State = {
   bgOpacity: 0.64,
   bookTitle: '选择作品',
   skillCatalog: [],          // 后端 /api/skills/catalog 缓存
+  books: [],                 // 缓存所有作品 (供顶栏下拉)
 };
 
 // ---- Agent 头像映射 (跟 macOS 4 个 Agent 对应) ----
@@ -141,17 +142,33 @@ function setupToolbar() {
   });
   document.addEventListener('click', () => $$('.tb-menu').forEach(m => m.classList.remove('open')));
 
-  // 作品下拉
+  // 作品下拉 - 启动时由 renderBookMenu 填充, 这里只处理点击
   $('#menu-book').addEventListener('click', async (e) => {
     const item = e.target.closest('.menu-item');
     if (!item) return;
+    // 选某本书
+    if (item.dataset.bookId) {
+      const id = parseInt(item.dataset.bookId, 10);
+      const b = (State.books || []).find(x => x.id === id);
+      if (b) {
+        State.currentBookId = b.id; State.bookTitle = b.title; updateBookTitle();
+        renderBookMenu();  // 刷新下拉高亮
+        switchTab('chapters'); loadSidebar(); loadMain();
+      }
+      return;
+    }
     const act = item.dataset.act;
-    if (act === 'select-none') { State.currentBookId = null; updateBookTitle(); switchTab('chapters'); }
-    else if (act === 'new') { await createBookFlow(); }
+    if (act === 'select-none') { State.currentBookId = null; State.bookTitle = '选择作品'; updateBookTitle(); switchTab('chapters'); }
+    else if (act === 'new') { await createBookFlow(); renderBookMenu(); }
     else if (act === 'import') { showToast('导入待实现', true); }
     else if (act === 'export') { showToast('导出待实现', true); }
     else if (act === 'delete' && State.currentBookId) {
-      if (confirm('删除当前作品?')) { await api.books.delete({ id: State.currentBookId }); State.currentBookId = null; updateBookTitle(); }
+      if (confirm('删除当前作品 "' + State.bookTitle + '"?')) {
+        await api.books.delete({ id: State.currentBookId });
+        State.currentBookId = null; State.bookTitle = '选择作品'; updateBookTitle();
+        await renderBookMenu();
+        switchTab('chapters');
+      }
     }
   });
 
@@ -176,7 +193,43 @@ function updateBookTitle() {
   if (el) el.textContent = State.bookTitle;
 }
 
-// ---- 顶栏快捷 ----
+// ---- 顶栏作品下拉 (动态填充现有作品) ----
+async function renderBookMenu() {
+  const menu = $('#menu-book');
+  if (!menu) return;
+  try {
+    State.books = (await api.books.list()) || [];
+  } catch (e) { State.books = []; }
+  const books = State.books;
+  // 当前书不在列表里 (被删), 清空
+  if (State.currentBookId && !books.find(b => b.id === State.currentBookId)) {
+    State.currentBookId = null; State.bookTitle = '选择作品'; updateBookTitle();
+  }
+  // 拼 HTML
+  const bookItems = books.map(b => {
+    const isCur = b.id === State.currentBookId;
+    const plat = b.platform && b.platform !== 'other' ? ' · ' + platformLabel(b.platform) : '';
+    const author = b.author ? ' · ' + escapeHtml(b.author) : '';
+    const target = b.targetChapters ? ` · 目标 ${b.targetChapters} 章` : '';
+    return `<div class="menu-item" data-book-id="${b.id}" style="${isCur ? 'background:rgba(28,25,23,0.08);font-weight:500' : ''}">
+      <span style="font-size:14px;width:18px">${isCur ? '✓' : '📖'}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(b.title)}</span>
+    </span>
+    <div style="font-size:10.5px;color:var(--text-faint);margin:2px 0 6px 26px">${plat}${author}${target}</div>
+  `;
+  }).join('');
+  menu.innerHTML = `
+    ${bookItems || '<div style="padding:10px 12px;color:var(--text-faint);font-size:12px">还没有作品</div>'}
+    <div style="border-top:1px solid var(--border);margin:4px 0"></div>
+    <div class="menu-item" data-act="select-none"><span>— 不选作品 —</span></div>
+    <div class="menu-item" data-act="new">＋ 新建作品</div>
+    <div class="menu-item" data-act="import">导入作品…</div>
+    <div class="menu-item" data-act="export">导出当前作品</div>
+    <div class="menu-item" data-act="delete" style="color:#b91c1c">删除当前作品</div>
+  `;
+}
+
+
 async function createChapterFlow() {
   if (!State.currentBookId) { showToast('先选作品', true); return; }
   const title = prompt('章节标题', '新章节');
@@ -195,6 +248,8 @@ async function createConvFlow() {
 async function createBookFlow() {
   // 弹完整表单 (跟 macOS NewBookSheet 对齐)
   showBookModal(null);
+  // 弹窗关掉后刷新顶栏
+  setTimeout(() => renderBookMenu(), 200);
 }
 async function editBookFlow(book) {
   showBookModal(book);
@@ -272,6 +327,7 @@ function showBookModal(book) {
     }
     close();
     showToast(isEdit ? '已保存' : '已创建');
+    await renderBookMenu();
     if (State.tab === 'books') renderBooks();
     else switchTab('books');
   };
@@ -1584,9 +1640,10 @@ function platformLabel(p) {
 (async function init() {
   setupToolbar();
   setupResizers();
-  // 加载作品列表更新顶栏
+  // 加载作品列表 -> 填顶栏下拉, 设默认当前
+  await renderBookMenu();
   try {
-    const books = await api.books.list();
+    const books = State.books;
     if (books && books.length && !State.currentBookId) {
       State.currentBookId = books[0].id;
       State.bookTitle = books[0].title;

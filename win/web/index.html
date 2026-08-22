@@ -22,12 +22,8 @@
             <span data-bind="currentBookTitle">选择作品</span>
             <span style="opacity:.5;font-size:10px">▾</span>
           </button>
-          <div class="menu-popup" id="menu-book">
-            <div class="menu-item" data-act="select-none">— 不选作品 —</div>
-            <div class="menu-item" data-act="new">＋ 新建作品</div>
-            <div class="menu-item" data-act="import">导入作品…</div>
-            <div class="menu-item" data-act="export">导出当前作品</div>
-            <div class="menu-item" data-act="delete" style="color:#b91c1c">删除当前作品</div>
+          <div class="menu-popup" id="menu-book" style="min-width:260px;max-height:60vh;overflow:auto">
+            <!-- 启动时由 app.js 拉 books 列表动态填, 再加固定操作项 -->
           </div>
         </div>
         <button class="tb-btn" id="newChapterBtn" data-tooltip="新建章节 (⌘N)">
