@@ -118,11 +118,31 @@ body::after {
 .activity-bar .spacer { flex: 1; }
 
 .sidebar {
-  width: 240px; flex: 0 0 240px;
+  width: var(--sidebar-width, 240px); flex: 0 0 var(--sidebar-width, 240px);
   background: var(--bar-bg);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; min-height: 0;
   overflow: hidden;
+  transition: none;
+}
+
+.resize-divider {
+  flex: 0 0 4px; width: 4px; cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 5;
+}
+.resize-divider:hover, .resize-divider.dragging {
+  background: rgba(28, 25, 23, 0.15);
+}
+.resize-divider::after {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+  width: 1px; transform: translateX(-50%);
+  background: transparent;
+  transition: background .12s;
+}
+.resize-divider:hover::after, .resize-divider.dragging::after {
+  background: var(--text-soft);
 }
 .sidebar .side-header {
   height: 40px; flex: 0 0 40px;

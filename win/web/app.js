@@ -902,6 +902,7 @@ async function renderSettings() {
 // ---- 启动 ----
 (async function init() {
   setupToolbar();
+  setupResizers();
   // 加载作品列表更新顶栏
   try {
     const books = await api.books.list();
@@ -915,3 +916,48 @@ async function renderSettings() {
   await renderAIMenu();
   switchTab('chapters');
 })();
+
+// ---- 侧栏宽度可拖动 (跟 macOS HorizontalResizeDivider 对齐) ----
+function setupResizers() {
+  const saved = parseInt(localStorage.getItem('zhinai-sidebar-width') || '240', 10);
+  applySidebarWidth(clamp(saved, 160, 480));
+  const div = document.getElementById('sidebarDivider');
+  if (!div) return;
+  let dragging = false, startX = 0, startW = 0;
+  div.addEventListener('mousedown', (e) => {
+    dragging = true;
+    startX = e.clientX;
+    const sb = document.getElementById('sidebarPane');
+    startW = sb ? sb.getBoundingClientRect().width : 240;
+    div.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    applySidebarWidth(clamp(startW + dx, 160, 480));
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    div.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    const sb = document.getElementById('sidebarPane');
+    if (sb) {
+      const w = sb.getBoundingClientRect().width;
+      localStorage.setItem('zhinai-sidebar-width', String(Math.round(w)));
+    }
+  });
+  // 双击 reset 到默认
+  div.addEventListener('dblclick', () => {
+    applySidebarWidth(240);
+    localStorage.setItem('zhinai-sidebar-width', '240');
+  });
+}
+function applySidebarWidth(w) {
+  document.documentElement.style.setProperty('--sidebar-width', w + 'px');
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
