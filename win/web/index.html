@@ -40,11 +40,8 @@
           <button class="tb-btn" data-trigger="ai" id="aiMenuBtn">
             <span class="icon">✨</span>写作工具 <span style="opacity:.5;font-size:10px">▾</span>
           </button>
-          <div class="menu-popup" id="menu-ai">
-            <div class="menu-item" data-skill="continue">续写正文</div>
-            <div class="menu-item" data-skill="polish">润色本章</div>
-            <div class="menu-item" data-skill="consistency">一致性检查</div>
-            <div class="menu-item" data-skill="outline">生成大纲</div>
+          <div class="menu-popup" id="menu-ai" style="min-width:240px">
+            <!-- 启动时由 app.js 从 /api/skills/catalog 拉取并按分类填充 -->
           </div>
         </div>
       </div>

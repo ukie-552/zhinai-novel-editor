@@ -61,6 +61,7 @@ async function callRest(method, params) {
     'vectors.stats':        ['GET',  '/api/vectors/stats'],
     'config.get':           ['GET',  '/api/config'],
     'config.set':           ['PUT',  '/api/config', params],
+    'skills.catalog':       ['GET',  '/api/skills/catalog'],
     'system.openDataDir':   ['POST', '/api/system/openDataDir'],
   };
   const spec = map[method];
@@ -85,6 +86,7 @@ const State = {
   loreId: null,
   bgOpacity: 0.64,
   bookTitle: '选择作品',
+  skillCatalog: [],          // 后端 /api/skills/catalog 缓存
 };
 
 // ---- Agent 头像映射 (跟 macOS 4 个 Agent 对应) ----
@@ -152,15 +154,12 @@ function setupToolbar() {
     }
   });
 
-  // AI 工具菜单
+  // AI 工具菜单 - 启动时由 renderAIMenu() 从 catalog 填充
   $('#menu-ai').addEventListener('click', async (e) => {
     const item = e.target.closest('.menu-item');
     if (!item) return;
-    const skill = item.dataset.skill;
-    if (skill === 'continue') await aiContinue();
-    else if (skill === 'polish') await aiPolish();
-    else if (skill === 'consistency') showToast('一致性检查: 待实现');
-    else if (skill === 'outline') showToast('生成大纲: 待实现');
+    const skillId = item.dataset.skill;
+    if (skillId) await aiRunSkill(skillId);
   });
 
   // 顶栏按钮
@@ -402,52 +401,186 @@ async function saveChapter(showMsg) {
 }
 
 async function aiContinue() {
-  if (!State.chapterId) { showToast('先选章节', true); return; }
-  const content = $('#editor').value, title = $('#chapterTitle').value;
-  const btn = $('#aiContinueBtn'); btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = '⏳ 生成中…';
-  try {
-    const lore = (await api.lore.list()) || [];
-    const hits = lore.filter(e => e.keywords && e.keywords.split(/[,，]/).some(k => k.trim() && content.includes(k.trim())));
-    const sys = '你是一位中文小说续写助手, 文笔自然, 保持人物一致.' +
-      (hits.length ? ('\n\n参考设定:\n' + hits.map(h => `- ${h.name}: ${h.content}`).join('\n')) : '');
-    const result = await api.llm.chat({
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'user', content: `续写《${title}》:\n\n${content}\n\n(直接接续正文, 不复述, 不解释, 不分段标题)` }
-      ],
-      temperature: 0.8,
-    });
-    const text = (result && (result.content || result.data?.content)) || '';
-    if (text) {
-      $('#editor').value = (content ? content + '\n\n' : '') + text;
-      updateWordCount();
-      showToast('续写完成');
-    } else showToast('无内容返回', true);
-  } catch (e) { showToast('续写失败: ' + e.message, true); }
-  finally { btn.disabled = false; btn.innerHTML = orig; saveChapter(false); }
+  await aiRunSkill('continue');
 }
 async function aiPolish() {
-  if (!State.chapterId) { showToast('先选章节', true); return; }
-  const content = $('#editor').value, title = $('#chapterTitle').value;
-  if (!content.trim()) { showToast('章节是空的', true); return; }
-  const btn = $('#aiPolishBtn'); btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = '⏳ 润色中…';
+  await aiRunSkill('polish');
+}
+
+// ---- AI 通用 skill 调用 (跟 macOS performSend 对齐) ----
+function findSkill(id) {
+  return State.skillCatalog.find(s => s.id === id);
+}
+
+async function aiRunSkill(skillId) {
+  const skill = findSkill(skillId);
+  if (!skill) { showToast('未找到 skill: ' + skillId, true); return; }
+
+  // 校验: 续写/润色/scene/continue 要有章节
+  const needChapter = ['continue', 'polish', 'scene'].includes(skillId);
+  if (needChapter && !State.chapterId) { showToast('先选章节', true); return; }
+
+  // 收集输入
+  const editor = $('#editor'), title = $('#chapterTitle');
+  const targetText = (editor && editor.value) || '';
+  const chapterTitle = (title && title.value) || '';
+
+  // 命中设定
+  const lore = (await api.lore.list()) || [];
+  const hits = lore.filter(e => e.keywords && e.keywords.split(/[,，]/).some(k => k.trim() && targetText.includes(k.trim())));
+
+  // 构造 user message (按 skill 类型)
+  let userText = '';
+  if (skillId === 'continue') userText = `续写《${chapterTitle}》正文, 直接接续, 不要复述.`;
+  else if (skillId === 'polish') userText = `润色《${chapterTitle}》:\n\n${targetText}`;
+  else if (skillId === 'scene') userText = '创作一段场景正文.';
+  else if (skillId === 'outline') userText = '为当前作品生成完整分章大纲.';
+  else if (skillId === 'character') userText = '设计一个人物 (名字/性格/背景由你定).';
+  else if (skillId === 'worldbuilding') userText = '完善力量体系/地理/势力/历史.';
+  else if (skillId === 'location') userText = '设计一个关键地点.';
+  else if (skillId === 'faction') userText = '设计一个组织势力.';
+  else if (skillId === 'item') userText = '设计一个关键物品/神器.';
+  else if (skillId === 'consistency') userText = '检查前文与设定的一致性.';
+  else if (skillId === 'inspire') userText = '围绕当前作品做灵感脑暴.';
+
+  // loading 弹窗
+  showSkillModal(skill, '⏳ 生成中…', '', false);
+
   try {
     const result = await api.llm.chat({
-      messages: [
-        { role: 'system', content: '你是一位中文小说润色助手, 在保持原意和风格的前提下润色文字, 不要改变剧情. 直接给出润色后的全文, 不要复述要求.' },
-        { role: 'user', content: `润色《${title}》:\n\n${content}` }
-      ],
-      temperature: 0.6,
+      skillId,
+      messages: [{ role: 'user', content: userText }],
+      temperature: 0.7,
+      loreHits: hits.map(h => ({ name: h.name, content: h.content })),
     });
     const text = (result && (result.content || result.data?.content)) || '';
-    if (text) {
-      if (confirm('用润色版替换当前章节?')) {
-        $('#editor').value = text; updateWordCount(); showToast('已润色');
-        saveChapter(false);
-      }
-    } else showToast('无内容返回', true);
-  } catch (e) { showToast('润色失败: ' + e.message, true); }
-  finally { btn.disabled = false; btn.innerHTML = orig; }
+    if (!text) {
+      showSkillModal(skill, '⚠ 无内容返回', '请检查 API 配置或换个模型试试.', true);
+      return;
+    }
+    // 根据 skill 类型显示不同操作按钮
+    const actions = skillActionsFor(skillId, text);
+    showSkillModal(skill, '生成结果', text, false, actions);
+  } catch (e) {
+    showSkillModal(skill, '✗ 调用失败: ' + e.message, '', true);
+  }
+}
+
+function skillActionsFor(skillId, text) {
+  // 不同 skill 给出"应用到"按钮
+  if (skillId === 'continue') return [{ label: '追加到当前章节', act: 'appendChapter', text }];
+  if (skillId === 'polish')   return [{ label: '替换当前章节', act: 'replaceChapter', text }];
+  if (skillId === 'scene')    return [{ label: '追加到当前章节', act: 'appendChapter', text }];
+  if (skillId === 'character' || skillId === 'location' || skillId === 'faction' || skillId === 'item' || skillId === 'worldbuilding') {
+    return [{ label: '加到设定库', act: 'addLore', text, skillId }];
+  }
+  return [{ label: '复制到剪贴板', act: 'copy', text }];
+}
+
+function showSkillModal(skill, title, body, isError, actions) {
+  let modal = document.getElementById('skillModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'skillModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999';
+    document.body.appendChild(modal);
+  }
+  const actBtns = (actions || []).map((a, i) => `<button class="btn-primary" data-act="${i}">${a.label}</button>`).join('');
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:720px;width:90%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+        <span style="font-size:18px">${skill.icon || '✨'}</span>
+        <strong style="font-size:14px">${escapeHtml(skill.name || title)}</strong>
+        <span style="flex:1"></span>
+        <button class="btn-icon" id="skillModalClose">✕</button>
+      </div>
+      <div style="padding:16px 20px;overflow:auto;flex:1;white-space:pre-wrap;font:13px/1.7 ui-monospace,Menlo,monospace;color:${isError ? '#b91c1c' : '#1c1917'};background:${isError ? '#fef2f2' : '#fafaf9'}">${escapeHtml(body || title)}</div>
+      <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+        ${actBtns}
+        <button class="btn-secondary" id="skillModalClose2">关闭</button>
+      </div>
+    </div>
+  `;
+  modal.style.display = 'flex';
+  // 关闭
+  const close = () => { modal.style.display = 'none'; };
+  modal.querySelector('#skillModalClose').onclick = close;
+  modal.querySelector('#skillModalClose2').onclick = close;
+  // 操作
+  if (actions) {
+    modal.querySelectorAll('[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const a = actions[parseInt(btn.dataset.act)];
+        if (a.act === 'appendChapter') {
+          const ed = $('#editor');
+          if (ed) { ed.value = (ed.value ? ed.value + '\n\n' : '') + a.text; updateWordCount(); saveChapter(false); showToast('已追加到章节'); }
+          close();
+        } else if (a.act === 'replaceChapter') {
+          const ed = $('#editor');
+          if (ed) { ed.value = a.text; updateWordCount(); saveChapter(false); showToast('已替换'); }
+          close();
+        } else if (a.act === 'addLore') {
+          const kind = a.skillId === 'character' ? 'character' :
+                       a.skillId === 'location'   ? 'location'   :
+                       a.skillId === 'faction'    ? 'other'      :
+                       a.skillId === 'item'       ? 'item'       :
+                       a.skillId === 'worldbuilding' ? 'world'    : 'other';
+          const name = prompt('设定名?', extractName(a.text) || '新设定');
+          if (name) {
+            api.lore.create({ kind, name, content: a.text, keywords: '' }).then(() => { showToast('已加到设定库'); switchTab('lore'); });
+            close();
+          }
+        } else if (a.act === 'copy') {
+          navigator.clipboard.writeText(a.text).then(() => showToast('已复制'));
+        }
+      });
+    });
+  }
+}
+
+function extractName(text) {
+  const m = text.match(/^#+\s*(.+)/m) || text.match(/^名称[:：]\s*(.+)/m) || text.match(/^姓名[:：]\s*(.+)/m);
+  return m ? m[1].trim().slice(0, 40) : null;
+}
+
+// ---- 渲染 AI 工具菜单 (从 catalog 拉) ----
+async function renderAIMenu() {
+  const menu = $('#menu-ai');
+  menu.innerHTML = '';
+  try {
+    State.skillCatalog = await api.skills.catalog();
+  } catch (e) { State.skillCatalog = []; }
+  if (!State.skillCatalog.length) {
+    menu.innerHTML = '<div style="padding:10px;color:var(--text-soft);font-size:12px">技能加载失败, 稍后重试</div>';
+    return;
+  }
+  // 按 category 分组
+  const groups = { write: [], world: [], analyze: [], user: [] };
+  const label = { write: '创作', world: '设定', analyze: '分析', user: '我的' };
+  for (const s of State.skillCatalog) {
+    if (!groups[s.category]) groups[s.category] = [];
+    groups[s.category].push(s);
+  }
+  for (const k of ['write', 'world', 'analyze', 'user']) {
+    if (!groups[k] || !groups[k].length) continue;
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'padding:6px 10px 4px;font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-faint);user-select:none';
+    hdr.textContent = label[k];
+    menu.appendChild(hdr);
+    for (const s of groups[k]) {
+      if (s.id === 'chat') continue;  // chat 不在写作工具菜单
+      const item = document.createElement('div');
+      item.className = 'menu-item';
+      item.dataset.skill = s.id;
+      item.innerHTML = `<span style="font-size:14px;width:18px">${s.icon || '•'}</span><span>${escapeHtml(s.name)}</span>`;
+      item.addEventListener('mouseenter', () => { item.style.background = 'var(--hover)'; });
+      item.addEventListener('mouseleave', () => { item.style.background = ''; });
+      menu.appendChild(item);
+    }
+  }
+  // 把 aiContinue / aiPolish 顶栏按钮也走通用入口
+  $('#aiContinueBtn')?.addEventListener('click', () => aiRunSkill('continue'));
+  $('#aiPolishBtn')?.addEventListener('click', () => aiRunSkill('polish'));
 }
 
 // ---- Lore ----
@@ -778,5 +911,7 @@ async function renderSettings() {
       updateBookTitle();
     }
   } catch (_) {}
+  // 加载 skill catalog 渲染 AI 工具菜单
+  await renderAIMenu();
   switchTab('chapters');
 })();

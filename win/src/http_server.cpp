@@ -6,6 +6,7 @@
 #include "vector_store.h"
 #include "config.h"
 #include "platform.h"
+#include "skills_catalog.h"
 
 #define CPPHTTPLIB_THREAD_POOL_COUNT 8
 #include <httplib.h>
@@ -253,7 +254,7 @@ void registerLLM(httplib::Server& s) {
                         "application/json");
     });
 
-    // 同步对话
+    // 同步对话 (支持 skillId 自动拼 system prompt)
     s.Post("/api/llm/chat", [](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; return; }
@@ -272,12 +273,53 @@ void registerLLM(httplib::Server& s) {
                 r.messages.push_back({m.value("role", "user"), m.value("content", "")});
             }
         }
+
+        // skillId -> 自动拼 system prompt (跟 macOS 的 performSend 对齐)
+        std::string skillId = j.value("skillId", "");
+        std::string injectedSys;
+        if (!skillId.empty() && skillId != "chat") {
+            // 先查内置
+            skills_catalog::Skill sk;
+            bool found = false;
+            for (const auto& s : skills_catalog::builtIn()) {
+                if (s.id == skillId) { sk = s; found = true; break; }
+            }
+            // 再查用户 Markdown 技能
+            if (!found) {
+                for (const auto& u : skills::list()) {
+                    if (u.name == skillId) {
+                        sk = skills_catalog::Skill{
+                            u.name, u.name, "📄", u.summary, "user",
+                            skills::read(u.name), false, 0, false, u.path
+                        };
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                // 拼 system prompt: 命中设定上下文 + skill 任务指令
+                std::string loreCtx;
+                if (j.contains("loreHits") && j["loreHits"].is_array()) {
+                    for (auto& e : j["loreHits"]) {
+                        loreCtx += "- " + e.value("name", "") + ": " + e.value("content", "") + "\n";
+                    }
+                }
+                injectedSys = skills_catalog::composeSystemPrompt(sk, loreCtx);
+            }
+        }
+
+        // 注入 system message (放在最前)
+        if (!injectedSys.empty()) {
+            r.messages.insert(r.messages.begin(), {"system", injectedSys});
+        }
+
         auto resp = llm::chat(r);
         res.set_content(json{{"ok", resp.ok}, {"content", resp.content}, {"error", resp.error}}.dump(),
                         "application/json");
     });
 
-    // 流式对话 (SSE)
+    // 流式对话 (SSE) - 同样支持 skillId
     s.Post("/api/llm/chat/stream", [](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; return; }
@@ -296,11 +338,42 @@ void registerLLM(httplib::Server& s) {
                 r.messages.push_back({m.value("role", "user"), m.value("content", "")});
             }
         }
+        // skill 注入
+        std::string skillId = j.value("skillId", "");
+        if (!skillId.empty() && skillId != "chat") {
+            skills_catalog::Skill sk;
+            bool found = false;
+            for (const auto& s : skills_catalog::builtIn()) {
+                if (s.id == skillId) { sk = s; found = true; break; }
+            }
+            if (!found) {
+                for (const auto& u : skills::list()) {
+                    if (u.name == skillId) {
+                        sk = skills_catalog::Skill{
+                            u.name, u.name, "📄", u.summary, "user",
+                            skills::read(u.name), false, 0, false, u.path
+                        };
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                std::string loreCtx;
+                if (j.contains("loreHits") && j["loreHits"].is_array()) {
+                    for (auto& e : j["loreHits"]) {
+                        loreCtx += "- " + e.value("name", "") + ": " + e.value("content", "") + "\n";
+                    }
+                }
+                std::string sys = skills_catalog::composeSystemPrompt(sk, loreCtx);
+                r.messages.insert(r.messages.begin(), {"system", sys});
+            }
+        }
+
         std::string err;
         res.set_header("Content-Type", "text/event-stream");
         res.set_header("Cache-Control", "no-cache");
         res.set_header("Connection", "keep-alive");
-        // 简化: 整段拼完再返回, 真流式需要 chunked provider; 第一版够用.
         std::string full;
         llm::chatStream(r, [&](const std::string& d) {
             full += d;
@@ -318,6 +391,31 @@ void registerSkills(httplib::Server& s) {
     s.Get("/api/skills", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(skills::listAsJson().dump(), "application/json");
     });
+
+    // 内置 + 用户 Markdown 技能的全集 (供前端 AI 工具菜单) -
+    // 必须在 /api/skills/<name> 之前注册, 否则通配会吞掉 "catalog"
+    s.Get("/api/skills/catalog", [](const httplib::Request&, httplib::Response& res) {
+        json arr = json::array();
+        for (const auto& s : skills_catalog::builtIn()) {
+            arr.push_back({
+                {"id", s.id}, {"name", s.name}, {"icon", s.icon},
+                {"desc", s.desc}, {"category", s.category},
+                {"needsText", s.needsText}, {"chapters", s.chapters},
+                {"builtIn", s.builtIn},
+            });
+        }
+        auto userList = skills::list();
+        for (const auto& s : userList) {
+            arr.push_back({
+                {"id", s.name}, {"name", s.name}, {"icon", "📄"},
+                {"desc", s.summary}, {"category", "user"},
+                {"needsText", false}, {"chapters", 0},
+                {"builtIn", false}, {"filePath", s.path},
+            });
+        }
+        res.set_content(arr.dump(), "application/json");
+    });
+
     s.Get(R"(/api/skills/([^/]+))", [](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
         res.set_content(json{{"name", name}, {"content", skills::read(name)}}.dump(), "application/json");
