@@ -448,11 +448,40 @@ void registerVectors(httplib::Server& s) {
 
 void registerConfig(httplib::Server& s) {
     s.Get("/api/config", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(config::loadConfig().dump(), "application/json");
+        // 跟原 config 合并默认值, 让前端能拿到完整 schema
+        json cfg = config::loadConfig();
+        // 模型商预设
+        cfg["providers"] = {
+            {{"id", "openai"}, {"label", "OpenAI"}, {"baseURL", "https://api.openai.com/v1"},
+             {"models", {"gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "o1-mini"}}},
+            {{"id", "deepseek"}, {"label", "DeepSeek"}, {"baseURL", "https://api.deepseek.com/v1"},
+             {"models", {"deepseek-chat", "deepseek-reasoner"}}},
+            {{"id", "dashscope"}, {"label", "通义千问 (DashScope)"}, {"baseURL", "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+             {"models", {"qwen-plus", "qwen-turbo", "qwen-max", "qwen-long"}}},
+            {{"id", "zhipu"}, {"label", "智谱 GLM"}, {"baseURL", "https://open.bigmodel.cn/api/paas/v4"},
+             {"models", {"glm-4-flash", "glm-4-air", "glm-4-plus"}}},
+            {{"id", "ollama"}, {"label", "Ollama (本地)"}, {"baseURL", "http://127.0.0.1:11434/v1"},
+             {"models", {"qwen2.5:7b", "llama3.1:8b", "gemma2:9b"}}},
+            {{"id", "custom"}, {"label", "自定义"}, {"baseURL", ""}, {"models", json::array()}},
+        };
+        cfg["defaults"] = {
+            {"temperature", 0.7}, {"maxTokens", 8192}, {"contextWindow", 131072},
+            {"enableTools", true}, {"enableContextCompression", true},
+            {"backgroundOpacity", 0.64}, {"backgroundMediaPath", ""},
+            {"followsStreamingOutput", true},
+        };
+        // 补默认值
+        for (auto it = cfg["defaults"].begin(); it != cfg["defaults"].end(); ++it) {
+            if (!cfg.contains(it.key())) cfg[it.key()] = it.value();
+        }
+        res.set_content(cfg.dump(), "application/json");
     });
     s.Put("/api/config", [](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; return; }
+        // 去掉前端不存的后端辅助字段
+        j.erase("providers");
+        j.erase("defaults");
         config::saveConfig(j);
         res.set_content(R"({"ok":true})", "application/json");
     });

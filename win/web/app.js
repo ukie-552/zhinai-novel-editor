@@ -863,16 +863,78 @@ async function renderSkills() {
 // ---- Settings ----
 async function renderSettings() {
   const cfg = await api.config.get();
+  const providers = cfg.providers || [];
+  const defaults = cfg.defaults || {};
+  // 模型商下拉
+  const sel = $('#cfgProvider');
+  sel.innerHTML = providers.map(p => `<option value="${p.id}">${p.name || p.id}</option>`).join('');
+  // 推断当前 provider
+  const currentProvider = inferProvider(providers, cfg.baseURL || '', cfg.model || '');
+  sel.value = currentProvider || 'custom';
+  sel.addEventListener('change', () => {
+    const p = providers.find(x => x.id === sel.value);
+    if (p) {
+      $('#cfgBaseURL').value = p.baseURL || '';
+      const dl = $('#cfgModelList');
+      dl.innerHTML = (p.models || []).map(m => `<option value="${m}">`).join('');
+    }
+  });
+  // 初始化 datalist
+  const p = providers.find(x => x.id === (sel.value || 'custom'));
+  if (p) {
+    const dl = $('#cfgModelList');
+    dl.innerHTML = (p.models || []).map(m => `<option value="${m}">`).join('');
+  }
+
+  // 表单值
   $('#cfgBaseURL').value = cfg.baseURL || '';
   $('#cfgApiKey').value = cfg.apiKey || '';
   $('#cfgModel').value = cfg.model || '';
-  $('#bgOpacity').value = State.bgOpacity;
+  const temp = cfg.temperature ?? defaults.temperature ?? 0.7;
+  $('#cfgTemp').value = temp; $('#cfgTempVal').textContent = temp.toFixed(2);
+  $('#cfgMaxTokens').value = cfg.maxTokens ?? defaults.maxTokens ?? 8192;
+  $('#cfgContextWindow').value = cfg.contextWindow ?? defaults.contextWindow ?? 131072;
+  $('#cfgEnableTools').checked = cfg.enableTools ?? defaults.enableTools ?? true;
+  $('#cfgEnableComp').checked = cfg.enableContextCompression ?? defaults.enableContextCompression ?? true;
+  $('#cfgFollowStream').checked = cfg.followsStreamingOutput ?? defaults.followsStreamingOutput ?? true;
+  const op = cfg.backgroundOpacity ?? defaults.backgroundOpacity ?? 0.64;
+  $('#bgOpacity').value = Math.round(op * 100); $('#bgOpacityVal').textContent = Math.round(op * 100);
+  State.bgOpacity = op;
+  document.documentElement.style.setProperty('--bg-opacity', op);
   $('#bgPath').value = cfg.backgroundMediaPath || '';
+  // 数据目录 (后端可以查, 但前端写死简化)
+  $('#cfgDataDir').textContent = (cfg.dataDir || navigator.platform.includes('Win')
+    ? '%APPDATA%\\ZhinaiNovelEditor\\' : '~/Library/Application Support/ZhinaiNovelEditor/');
+
+  // 事件
+  $('#cfgKeyToggle').addEventListener('click', () => {
+    const k = $('#cfgApiKey');
+    if (k.type === 'password') { k.type = 'text'; $('#cfgKeyToggle').textContent = '隐藏'; }
+    else { k.type = 'password'; $('#cfgKeyToggle').textContent = '显示'; }
+  });
+  $('#cfgTemp').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    $('#cfgTempVal').textContent = v.toFixed(2);
+  });
+  $('#bgOpacity').addEventListener('input', (e) => {
+    const v = parseInt(e.target.value, 10);
+    State.bgOpacity = v / 100;
+    $('#bgOpacityVal').textContent = v;
+    document.documentElement.style.setProperty('--bg-opacity', State.bgOpacity);
+  });
+  $('#cfgOpenDir').addEventListener('click', () => api.system.openDataDir().catch(e => showToast(e.message, true)));
   $('#cfgSaveBtn').addEventListener('click', async () => {
     const newCfg = {
+      provider: sel.value,
       baseURL: $('#cfgBaseURL').value.trim(),
       apiKey: $('#cfgApiKey').value.trim(),
       model: $('#cfgModel').value.trim(),
+      temperature: parseFloat($('#cfgTemp').value),
+      maxTokens: parseInt($('#cfgMaxTokens').value, 10),
+      contextWindow: parseInt($('#cfgContextWindow').value, 10),
+      enableTools: $('#cfgEnableTools').checked,
+      enableContextCompression: $('#cfgEnableComp').checked,
+      followsStreamingOutput: $('#cfgFollowStream').checked,
       backgroundMediaPath: $('#bgPath').value.trim(),
       backgroundOpacity: State.bgOpacity,
     };
@@ -892,11 +954,20 @@ async function renderSettings() {
       else { out.textContent = '✗ 失败: ' + (r.error || ''); out.style.color = '#b91c1c'; }
     } catch (e) { out.textContent = '✗ ' + e.message; out.style.color = '#b91c1c'; }
   });
-  $('#bgOpacity').addEventListener('input', (e) => {
-    State.bgOpacity = parseFloat(e.target.value) || 0.64;
-    document.documentElement.style.setProperty('--bg-opacity', State.bgOpacity);
-  });
-  document.documentElement.style.setProperty('--bg-opacity', State.bgOpacity);
+}
+
+function inferProvider(providers, baseURL, model) {
+  for (const p of providers) {
+    if (!p.baseURL) continue;
+    if (baseURL && baseURL.startsWith(p.baseURL.replace(/\/+$/, ''))) return p.id;
+  }
+  if (model) {
+    if (model.startsWith('gpt-')) return 'openai';
+    if (model.startsWith('deepseek-')) return 'deepseek';
+    if (model.startsWith('qwen-')) return 'dashscope';
+    if (model.startsWith('glm-')) return 'zhipu';
+  }
+  return 'custom';
 }
 
 // ---- 启动 ----
