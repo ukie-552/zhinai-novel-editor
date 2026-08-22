@@ -67,7 +67,7 @@ struct ChatView: View {
                                   size: 14)
                         .font(.system(size: 10))
                         .frame(width: 14, height: 14)
-                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .clipShape(Circle())
                     Text(app.currentAgent.name)
                         .lineLimit(1)
                     Image(systemName: "chevron.down").font(.system(size: 8))

@@ -343,12 +343,11 @@ struct AgentSheet: View {
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        in: Circle()
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(Circle())
                     .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.accentColor.opacity(0.18), lineWidth: 1)
+                        Circle().strokeBorder(Color.accentColor.opacity(0.18), lineWidth: 1)
                     }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -757,8 +756,8 @@ struct AgentEditor: View {
                     AgentIconView(icon: icon, avatarPath: avatarSourcePath)
                         .font(.system(size: 20))
                         .frame(width: 44, height: 44)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .background(.quaternary.opacity(0.5), in: Circle())
+                        .clipShape(Circle())
                 }
                 .menuStyle(.borderlessButton)
                 .help("选择 emoji 或符号头像")

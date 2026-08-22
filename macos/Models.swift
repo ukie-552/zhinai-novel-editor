@@ -384,7 +384,9 @@ private func agentAvatarThumbnail(atPath path: String, size: CGFloat) -> NSImage
     let target = NSImage(size: targetSize)
     target.lockFocus()
     NSGraphicsContext.current?.imageInterpolation = .high
-    source.draw(in: NSRect(origin: .zero, size: targetSize),
+    let targetRect = NSRect(origin: .zero, size: targetSize)
+    NSBezierPath(ovalIn: targetRect).addClip()
+    source.draw(in: targetRect,
                 from: sourceRect,
                 operation: .copy,
                 fraction: 1)
