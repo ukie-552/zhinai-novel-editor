@@ -356,6 +356,104 @@ struct ChatView: View {
 
 // MARK: - 消息气泡
 
+private enum ChatMarkdownFormatter {
+    static func displaySource(_ source: String) -> String {
+        var output: [String] = []
+        for rawLine in source.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+
+            if isFence(trimmed) || isTableDelimiter(trimmed) { continue }
+            if isHorizontalRule(trimmed) {
+                appendBlankLine(to: &output)
+                continue
+            }
+            if trimmed.isEmpty {
+                appendBlankLine(to: &output)
+                continue
+            }
+
+            if let heading = headingText(trimmed) {
+                output.append("**\(heading)**")
+                continue
+            }
+            if isTableRow(trimmed) {
+                let cells = trimmed.split(separator: "|", omittingEmptySubsequences: true)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                if !cells.isEmpty { output.append(cells.joined(separator: " · ")) }
+                continue
+            }
+
+            var line = trimmed
+            while line.hasPrefix(">") {
+                line.removeFirst()
+                line = line.trimmingCharacters(in: .whitespaces)
+            }
+            if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
+                line = "• " + line.dropFirst(2)
+            }
+            output.append(line)
+        }
+
+        while output.last?.isEmpty == true { output.removeLast() }
+        return output.joined(separator: "\n")
+    }
+
+    static func attributed(_ source: String, showsCursor: Bool = false) -> AttributedString {
+        let prepared = displaySource(source)
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        var result = (try? AttributedString(markdown: prepared, options: options))
+            ?? AttributedString(prepared.replacingOccurrences(of: "**", with: ""))
+        if showsCursor { result.append(AttributedString("▌")) }
+        return result
+    }
+
+    private static func appendBlankLine(to output: inout [String]) {
+        if !output.isEmpty && output.last?.isEmpty != true { output.append("") }
+    }
+
+    private static func headingText(_ line: String) -> String? {
+        let count = line.prefix { $0 == "#" }.count
+        guard (1...6).contains(count) else { return nil }
+        let remainder = line.dropFirst(count)
+        guard remainder.first?.isWhitespace == true else { return nil }
+        let heading = remainder.trimmingCharacters(in: .whitespaces)
+        return heading.isEmpty ? nil : heading
+    }
+
+    private static func isFence(_ line: String) -> Bool {
+        line.hasPrefix("```") || line.hasPrefix("~~~")
+    }
+
+    private static func isHorizontalRule(_ line: String) -> Bool {
+        let compact = line.filter { !$0.isWhitespace }
+        guard compact.count >= 3, let first = compact.first,
+              first == "-" || first == "*" || first == "_" else { return false }
+        return compact.allSatisfy { $0 == first }
+    }
+
+    private static func isTableDelimiter(_ line: String) -> Bool {
+        guard line.contains("|"), line.contains("-") else { return false }
+        return line.allSatisfy { $0 == "|" || $0 == "-" || $0 == ":" || $0.isWhitespace }
+    }
+
+    private static func isTableRow(_ line: String) -> Bool {
+        line.contains("|") && (line.hasPrefix("|") || line.hasSuffix("|"))
+    }
+}
+
+private struct MarkdownMessageText: View {
+    let source: String
+    var showsCursor = false
+
+    var body: some View {
+        Text(ChatMarkdownFormatter.attributed(source, showsCursor: showsCursor))
+    }
+}
+
 struct MessageRow: View {
     @EnvironmentObject var app: AppState
     let msg: Msg
@@ -409,7 +507,7 @@ struct MessageRow: View {
                                    inProgress: false)
             }
             if !response.isEmpty {
-                Text(response)
+                MarkdownMessageText(source: response)
                     .font(.system(size: 13.5))
                     .textSelection(.enabled)
             }
@@ -457,7 +555,7 @@ struct StreamingRow: View {
                     .padding(.vertical, 3)
                 }
                 if !parts.response.isEmpty {
-                    Text(parts.response + "▌")
+                    MarkdownMessageText(source: parts.response, showsCursor: true)
                         .font(.system(size: 13.5))
                         .textSelection(.enabled)
                 } else if parts.reasoning.isEmpty && toolName == nil {
@@ -485,7 +583,7 @@ private struct ThinkingDisclosure: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            Text(reasoning)
+            MarkdownMessageText(source: reasoning)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
