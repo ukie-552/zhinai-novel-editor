@@ -424,6 +424,7 @@ struct MessageRow: View {
 // MARK: - 流式输出行
 
 struct StreamingRow: View {
+    @EnvironmentObject var app: AppState
     let text: String
     var reasoningDuration: Double = 0
     var toolName: String? = nil
@@ -432,11 +433,14 @@ struct StreamingRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "book.closed.fill")
+            AgentIconView(icon: app.currentAgent.icon,
+                          avatarPath: app.currentAgent.avatarPath,
+                          size: 26)
                 .font(.system(size: 11))
                 .frame(width: 26, height: 26)
-                .background(Color.accentColor.opacity(0.25), in: Circle())
-                .foregroundStyle(Color.accentColor)
+                .background(Color.accentColor.opacity(0.18), in: Circle())
+                .clipShape(Circle())
+                .overlay { Circle().strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5) }
             VStack(alignment: .leading, spacing: 4) {
                 if !parts.reasoning.isEmpty {
                     ThinkingDisclosure(reasoning: parts.reasoning,
