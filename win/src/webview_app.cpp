@@ -18,14 +18,17 @@ int run(const std::string& url, const std::string& title, BoundCallback onFronte
         webview::webview w(true, nullptr);  // debug=true, no custom user_data
         w.set_title(title);
         w.set_size(1280, 820, WEBVIEW_HINT_NONE);
-        w.navigate(url);
 
         // 同步 binding: 前端调 window.__nativeCall(jsonStr) -> 拿 string 返回值
+        // 必须在 navigate() 之前调, webview.h Windows 后端用
+        // AddScriptToExecuteOnDocumentCreated 注入 JS, navigate 后再 bind 无效
         w.bind("__nativeCall",
                [onFrontendCall](const std::string& req) -> std::string {
                    if (!onFrontendCall) return R"({"error":"no handler"})";
                    return onFrontendCall(req);
                });
+
+        w.navigate(url);
 
         w.run();
         return 0;

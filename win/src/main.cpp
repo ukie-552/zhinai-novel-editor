@@ -145,6 +145,8 @@ std::string dispatch(const std::string& reqJson) {
     cli.set_connection_timeout(0, 200000);  // 200 ms
     cli.set_read_timeout(60, 0);
 
+    zhinai::platform::log("INFO", "dispatch: " + verb + " " + path);
+
     httplib::Result r;
     if (verb == "GET")         r = cli.Get(path);
     else if (verb == "POST")   r = cli.Post(path, body, "application/json");
@@ -152,8 +154,10 @@ std::string dispatch(const std::string& reqJson) {
     else if (verb == "DELETE") r = cli.Delete(path);
 
     if (!r) {
+        zhinai::platform::log("WARN", "dispatch failed (no response): " + verb + " " + path);
         return json{{"id", id}, {"ok", false}, {"error", "native call failed"}}.dump();
     }
+    zhinai::platform::log("INFO", "dispatch ok: " + verb + " " + path + " -> " + std::to_string(r->status));
     json data;
     try { data = json::parse(r->body); } catch (...) { data = r->body; }
     return json{{"id", id}, {"ok", r->status >= 200 && r->status < 300}, {"status", r->status}, {"data", data}}.dump();

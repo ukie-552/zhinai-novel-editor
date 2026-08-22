@@ -2,30 +2,9 @@
 // 通信: WebView2 postMessage 走 C++ 桥 (callNative),
 //       浏览器直连 fallback 走 REST (callRest).
 
-const isWebView = !!(window.chrome && window.chrome.webview);
-
+// 直接走 fetch, 绕开 webview 桥 (webview/webview.h 0.10.0 的 __nativeCall 桥不稳定).
+// 同源 (http://127.0.0.1:8090) 没 CORS 问题, 后端 C++ 端 dispatch 暂时没用上.
 async function callNative(method, params = {}) {
-  const id = String(Date.now()) + Math.random().toString(36).slice(2, 8);
-  if (isWebView) {
-    return new Promise((resolve, reject) => {
-      const onMsg = (e) => {
-        try {
-          const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-          if (data && data.id === id) {
-            window.chrome.webview.removeEventListener('message', onMsg);
-            if (data.ok) resolve(data.data);
-            else reject(new Error(data.error || 'native call failed'));
-          }
-        } catch (_) {}
-      };
-      window.chrome.webview.addEventListener('message', onMsg);
-      window.chrome.webview.postMessage(JSON.stringify({ id, method, params }));
-      setTimeout(() => {
-        window.chrome.webview.removeEventListener('message', onMsg);
-        reject(new Error('native call timeout'));
-      }, 60000);
-    });
-  }
   return callRest(method, params);
 }
 
@@ -212,10 +191,10 @@ async function renderBookMenu() {
     const author = b.author ? ' · ' + escapeHtml(b.author) : '';
     const target = b.targetChapters ? ` · 目标 ${b.targetChapters} 章` : '';
     return `<div class="menu-item" data-book-id="${b.id}" style="${isCur ? 'background:rgba(28,25,23,0.08);font-weight:500' : ''}">
-      <span style="font-size:14px;width:18px">${isCur ? '✓' : '📖'}</span>
+      <span style="font-size:14px;width:18px;flex:0 0 18px">${isCur ? '✓' : '📖'}</span>
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(b.title)}</span>
-    </span>
-    <div style="font-size:10.5px;color:var(--text-faint);margin:2px 0 6px 26px">${plat}${author}${target}</div>
+    </div>
+    <div style="font-size:10.5px;color:var(--text-faint);margin:-4px 0 6px 26px">${plat}${author}${target}</div>
   `;
   }).join('');
   menu.innerHTML = `
