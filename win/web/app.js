@@ -592,6 +592,41 @@ function skillActionsFor(skillId, text) {
   return [{ label: '复制到剪贴板', act: 'copy', text }];
 }
 
+function applyBackground(url, mime) {
+  // 替换 body::before 为图片 / 视频
+  document.body.style.setProperty('--bg-url', url ? `url('${url}')` : "url('img/DefaultBackground.jpeg')");
+  // 视频要用 video 标签代替 background-image, 所以用一层覆盖 div
+  let vid = document.getElementById('bgVideo');
+  if (mime && mime.startsWith('video/')) {
+    if (!vid) {
+      vid = document.createElement('video');
+      vid.id = 'bgVideo';
+      vid.autoplay = true;
+      vid.loop = true;
+      vid.muted = true;
+      vid.playsInline = true;
+      vid.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;z-index:-3;pointer-events:none';
+      document.body.prepend(vid);
+    }
+    if (url) vid.src = url;
+  } else if (vid) {
+    vid.remove();
+  }
+  // 缩略图
+  const prev = document.getElementById('bgPreview');
+  if (prev) {
+    if (mime && mime.startsWith('video/')) {
+      prev.innerHTML = '<span>已选视频背景</span>';
+      prev.style.background = 'rgba(0,128,0,0.1)';
+    } else if (url && url.includes('/api/background')) {
+      prev.innerHTML = '<img src="' + url + '" style="width:100%;height:100%;object-fit:cover">';
+    } else {
+      prev.innerHTML = '<span>默认</span>';
+      prev.style.background = 'rgba(0,0,0,0.05)';
+    }
+  }
+}
+
 function showSkillModal(skill, title, body, isError) {
   let modal = document.getElementById('skillModal');
   if (!modal) {
@@ -1093,12 +1128,45 @@ async function renderSettings() {
   $('#bgOpacity').value = Math.round(op * 100); $('#bgOpacityVal').textContent = Math.round(op * 100);
   State.bgOpacity = op;
   document.documentElement.style.setProperty('--bg-opacity', op);
-  $('#bgPath').value = cfg.backgroundMediaPath || '';
+  // (旧 bgPath 已废弃, 改用上传按钮)
   // 数据目录 (后端可以查, 但前端写死简化)
   $('#cfgDataDir').textContent = (cfg.dataDir || navigator.platform.includes('Win')
     ? '%APPDATA%\\ZhinaiNovelEditor\\' : '~/Library/Application Support/ZhinaiNovelEditor/');
 
   // 事件
+  $('#bgPickBtn').addEventListener('click', () => $('#bgFile').click());
+  $('#bgFile').addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      const mime = f.type;
+      try {
+        const r = await fetch('/api/system/uploadBackground', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: dataUrl, mime }),
+        });
+        const j = await r.json();
+        if (!j.ok) { showToast('上传失败: ' + (j.error || ''), true); return; }
+        applyBackground('/api/background?v=' + Date.now(), mime);
+        showToast('背景已更新');
+      } catch (err) { showToast('上传失败: ' + err.message, true); }
+    };
+    reader.readAsDataURL(f);
+  });
+  $('#bgResetBtn').addEventListener('click', async () => {
+    await fetch('/api/system/background', { method: 'DELETE' });
+    applyBackground(null);
+    showToast('已恢复默认');
+  });
+  // 启动时检查背景
+  fetch('/api/background', { method: 'HEAD' }).then(r => {
+    if (r.ok) {
+      const mime = r.headers.get('content-type') || '';
+      applyBackground('/api/background?v=' + Date.now(), mime);
+    }
+  });
+
   $('#cfgKeyToggle').addEventListener('click', () => {
     const k = $('#cfgApiKey');
     if (k.type === 'password') { k.type = 'text'; $('#cfgKeyToggle').textContent = '隐藏'; }
@@ -1127,7 +1195,6 @@ async function renderSettings() {
       enableTools: $('#cfgEnableTools').checked,
       enableContextCompression: $('#cfgEnableComp').checked,
       followsStreamingOutput: $('#cfgFollowStream').checked,
-      backgroundMediaPath: $('#bgPath').value.trim(),
       backgroundOpacity: State.bgOpacity,
     };
     await api.config.set(newCfg);

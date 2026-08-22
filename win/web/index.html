@@ -59,6 +59,7 @@
         <button class="ab-btn" data-tab="books" data-tooltip="作品">📚</button>
         <button class="ab-btn" data-tab="chapters" data-tooltip="章节">📄</button>
         <button class="ab-btn" data-tab="lore" data-tooltip="设定库">📖</button>
+        <button class="ab-btn" data-tab="search" data-tooltip="搜索">🔍</button>
         <button class="ab-btn" data-tab="chat" data-tooltip="对话">💬</button>
         <button class="ab-btn" data-tab="agents" data-tooltip="Agent">🤖</button>
         <button class="ab-btn" data-tab="vectors" data-tooltip="向量库">▦</button>
@@ -166,6 +167,15 @@
     <div id="agentList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px"></div>
   </template>
 
+  <template id="tpl-search">
+    <div class="main-title">搜索</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <input id="searchInput" placeholder="搜作品名/章节正文/设定/关键词 (Ctrl+K 聚焦)" style="flex:1" autofocus />
+      <button class="btn-primary" id="searchBtn">搜索</button>
+    </div>
+    <div id="searchResults"></div>
+  </template>
+
   <template id="tpl-vectors">
     <div class="main-title">本地向量库</div>
     <div class="sheet">
@@ -230,8 +240,13 @@
       </label>
 
       <h3 class="section-title">外观</h3>
-      <label class="field"><span>背景 (留空用默认)</span>
-        <input id="bgPath" placeholder="本地图片或视频的绝对路径" />
+      <label class="field"><span>背景</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="file" id="bgFile" accept="image/*,video/mp4,video/webm" style="display:none" />
+          <button class="btn-secondary" id="bgPickBtn">📁 选择图片或视频</button>
+          <button class="btn-link" id="bgResetBtn" style="margin-left:auto">恢复默认</button>
+        </div>
+        <div id="bgPreview" style="margin-top:8px;width:200px;height:80px;background:rgba(0,0,0,0.05);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--text-faint);font-size:11.5px">默认</div>
       </label>
       <label class="field"><span>背景可见度 (<span id="bgOpacityVal">64</span>%)</span>
         <input type="range" id="bgOpacity" min="10" max="90" step="5" />

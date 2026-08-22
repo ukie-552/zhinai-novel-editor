@@ -16,6 +16,7 @@
 #include <sstream>
 #include <queue>
 #include <condition_variable>
+#include <wincrypt.h>
 
 namespace zhinai::http {
 
@@ -608,6 +609,88 @@ void registerSearch(httplib::Server& s) {
     });
 }
 
+void registerBackground(httplib::Server& s) {
+    // 上传背景 (data URL: "data:<mime>;base64,<...>")
+    s.Post("/api/system/uploadBackground", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; res.set_content("{\"error\":\"bad json\"}", "application/json"); return; }
+        std::string dataUrl = j.value("data", "");
+        std::string mime = j.value("mime", "");
+        if (dataUrl.empty()) { res.status = 400; return; }
+        auto comma = dataUrl.find(',');
+        if (comma == std::string::npos) { res.status = 400; return; }
+        std::string b64 = dataUrl.substr(comma + 1);
+        if (mime.empty()) {
+            auto semi = dataUrl.find(';');
+            if (dataUrl.compare(0, 5, "data:") == 0 && semi != std::string::npos) {
+                mime = dataUrl.substr(5, semi - 5);
+            } else mime = "image/jpeg";
+        }
+        std::string ext = ".jpg";
+        if (mime.find("png") != std::string::npos) ext = ".png";
+        else if (mime.find("webp") != std::string::npos) ext = ".webp";
+        else if (mime.find("gif") != std::string::npos) ext = ".gif";
+        else if (mime.find("mp4") != std::string::npos) ext = ".mp4";
+        else if (mime.find("webm") != std::string::npos) ext = ".webm";
+
+        DWORD binLen = 0;
+        if (!CryptStringToBinaryA(b64.c_str(), (DWORD)b64.size(), CRYPT_STRING_BASE64, nullptr, &binLen, nullptr, nullptr)) {
+            res.status = 400; res.set_content("{\"error\":\"base64 size\"}", "application/json"); return;
+        }
+        std::string bin(binLen, '\0');
+        if (!CryptStringToBinaryA(b64.c_str(), (DWORD)b64.size(), CRYPT_STRING_BASE64,
+                                  (BYTE*)bin.data(), &binLen, nullptr, nullptr)) {
+            res.status = 400; res.set_content("{\"error\":\"base64 decode\"}", "application/json"); return;
+        }
+        bin.resize(binLen);
+
+        std::filesystem::path dir = platform::dataDir();
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        std::filesystem::path out = dir / ("background" + ext);
+        std::ofstream f(out, std::ios::binary | std::ios::trunc);
+        if (!f) { res.status = 500; return; }
+        f.write(bin.data(), bin.size());
+        f.close();
+        platform::log("INFO", "background saved: " + out.string());
+        res.set_content(json{{"ok", true}, {"url", "/api/background"}, {"mime", mime}, {"size", (long long)bin.size()}}.dump(),
+                        "application/json");
+    });
+
+    // serve 当前背景
+    s.Get(R"(/api/background(\?.*)?)", [](const httplib::Request& req, httplib::Response& res) {
+        std::filesystem::path dir = platform::dataDir();
+        for (auto& ext : {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm"}) {
+            auto p = dir / ("background" + std::string(ext));
+            if (std::filesystem::exists(p)) {
+                std::ifstream f(p, std::ios::binary);
+                if (!f) { res.status = 500; return; }
+                std::stringstream ss; ss << f.rdbuf();
+                std::string mime = "image/jpeg";
+                std::string s = ext;
+                if (s == ".png") mime = "image/png";
+                else if (s == ".webp") mime = "image/webp";
+                else if (s == ".gif") mime = "image/gif";
+                else if (s == ".mp4") mime = "video/mp4";
+                else if (s == ".webm") mime = "video/webm";
+                res.set_content(ss.str(), mime.c_str());
+                return;
+            }
+        }
+        res.status = 404;
+    });
+
+    s.Delete("/api/system/background", [](const httplib::Request&, httplib::Response& res) {
+        std::filesystem::path dir = platform::dataDir();
+        for (auto& ext : {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm"}) {
+            auto p = dir / ("background" + std::string(ext));
+            std::error_code ec;
+            std::filesystem::remove(p, ec);
+        }
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+}
+
 }  // namespace
 
 bool start(Server& s, const std::string& webDir, int& outPort) {
@@ -617,6 +700,7 @@ bool start(Server& s, const std::string& webDir, int& outPort) {
     registerBooks(*impl);
     registerChapters(*impl);
     registerSearch(*impl);
+    registerBackground(*impl);
     registerLore(*impl);
     registerAgents(*impl);
     registerConversations(*impl);
