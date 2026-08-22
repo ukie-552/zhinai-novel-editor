@@ -1,8 +1,12 @@
 # 📚 织奈编辑器
 
-项目/仓库名称：`zhinai-novel-editor`。
+织奈编辑器是一款面向长篇小说创作的 macOS 原生编辑器。它把正文、章节、设定资料、检索和模型辅助功能放在同一个工作区中，适合需要长期整理复杂作品的写作者。程序采用 SwiftUI 与 SQLite 实现，不依赖第三方运行环境，作品和配置默认保存在本机喵～
 
-本机运行的 **macOS 原生应用**（纯 SwiftUI + 原生 SQLite，零第三方依赖）。
+## 下载与安装
+
+从 [Releases](https://github.com/ukie-552/zhinai-novel-editor/releases) 下载最新的 Intel DMG，打开后将「织奈编辑器」拖入「Applications」。当前版本面向 Intel Mac，最低系统版本为 macOS 13。
+
+当前公开版本未经过 Apple 公证。首次运行时，请在 Finder 中右键点击应用，选择「打开」，再确认一次。请只从本仓库下载，并可使用 Release 中提供的 SHA-256 文件核对安装包。
 
 ## 布局（写作优先）
 
@@ -45,10 +49,11 @@
 
 `~/Library/Application Support/ZhinaiNovelEditor/`（`novels.db` + `config.json` + `agents.json`，全部本机）。首次启动会自动迁移旧版数据。
 
-## 构建与自检
+## 构建、打包与自检
 
 ```bash
 ./macos/build_app.sh        # 需要 Xcode 命令行工具
+./macos/build_dmg.sh 1.0.0  # 生成 Intel DMG 与 SHA-256 文件
 # 无头全链路自检（19 项）：
 swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 \
   macos/Models.swift macos/DB.swift macos/LLM.swift macos/Skills.swift macos/SelfTest.swift \

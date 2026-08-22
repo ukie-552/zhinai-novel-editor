@@ -28,7 +28,7 @@ echo "==> 清理旧构建…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-echo "==> 编译 Swift 应用…"
+echo "==> 编译 Intel Swift 应用…"
 swiftc -O -swift-version 5 -target x86_64-apple-macosx13.0 "${SNAPSHOT_FILES[@]}" \
   -o "$APP/Contents/MacOS/ZhinaiNovelEditor" \
   -framework SwiftUI -framework AppKit -framework AVFoundation -lsqlite3
@@ -59,6 +59,10 @@ cp "$ROOT/assets/DefaultBackground.jpeg" "$APP/Contents/Resources/DefaultBackgro
 
 echo "==> 本地签名…"
 codesign --force --sign - "$APP" 2>/dev/null || true
+
+echo "==> 验证架构与签名…"
+lipo -archs "$APP/Contents/MacOS/ZhinaiNovelEditor"
+codesign --verify --deep --strict "$APP"
 
 echo ""
 echo "✅ 构建完成：$APP"
