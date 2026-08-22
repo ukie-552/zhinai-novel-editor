@@ -67,13 +67,13 @@ file(GLOB APP_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM APP_SOURCES ${CMAKE_SOURCE_DIR}/src/db_stub.cpp)
 
 if(ZHINAI_HAS_SQLITE)
-    add_executable(${APP_NAME} WIN32 ${APP_SOURCES})
+    add_executable(${APP_NAME} WIN32 ${APP_SOURCES} ${CMAKE_SOURCE_DIR}/resources/app.ico)
     set_target_properties(${APP_NAME} PROPERTIES OUTPUT_NAME "织奈编辑器")
     target_compile_definitions(${APP_NAME} PRIVATE ZHINAI_HAS_SQLITE=1)
 else()
     # SQLite 不可用, 用 db_stub 替换 db.cpp
     list(REMOVE_ITEM APP_SOURCES ${CMAKE_SOURCE_DIR}/src/db.cpp)
-    add_executable(${APP_NAME} WIN32 ${APP_SOURCES} ${CMAKE_SOURCE_DIR}/src/db_stub.cpp)
+    add_executable(${APP_NAME} WIN32 ${APP_SOURCES} ${CMAKE_SOURCE_DIR}/src/db_stub.cpp} ${CMAKE_SOURCE_DIR}/resources/app.ico)
     set_target_properties(${APP_NAME} PROPERTIES OUTPUT_NAME "织奈编辑器")
 endif()
 

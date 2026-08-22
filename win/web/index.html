@@ -7,177 +7,205 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="style.css" />
 </head>
-<body class="bg-stone-50 text-stone-900 select-none">
-  <div id="app" class="h-screen flex flex-col">
-    <!-- Header -->
-    <header class="h-12 flex items-center px-4 border-b border-stone-200 bg-white/80 backdrop-blur">
-      <div class="font-semibold text-stone-800">织奈编辑器</div>
-      <div class="ml-3 text-xs text-stone-400" id="health">检查中…</div>
-      <div class="flex-1"></div>
-      <button class="btn-secondary" data-view="settings">设置</button>
+<body>
+  <div id="app">
+    <!-- 顶栏 (toolbar) -->
+    <header class="app-header">
+      <div class="brand">
+        <img src="img/AppIcon.png" alt="" />
+        <span>织奈编辑器</span>
+      </div>
+      <div class="toolbar" style="margin-left:12px">
+        <div class="tb-menu" data-menu="book">
+          <button class="tb-btn" data-trigger="book">
+            <span class="icon">📚</span>
+            <span data-bind="currentBookTitle">选择作品</span>
+            <span style="opacity:.5;font-size:10px">▾</span>
+          </button>
+          <div class="menu-popup" id="menu-book">
+            <div class="menu-item" data-act="select-none">— 不选作品 —</div>
+            <div class="menu-item" data-act="new">＋ 新建作品</div>
+            <div class="menu-item" data-act="import">导入作品…</div>
+            <div class="menu-item" data-act="export">导出当前作品</div>
+            <div class="menu-item" data-act="delete" style="color:#b91c1c">删除当前作品</div>
+          </div>
+        </div>
+        <button class="tb-btn" id="newChapterBtn" data-tooltip="新建章节 (⌘N)">
+          <span class="icon">＋</span>章节
+        </button>
+        <button class="tb-btn" id="newConvBtn" data-tooltip="新建对话 (⌘⇧N)">
+          <span class="icon">💬</span>对话
+        </button>
+        <div class="tb-menu" data-menu="ai">
+          <button class="tb-btn" data-trigger="ai" id="aiMenuBtn">
+            <span class="icon">✨</span>写作工具 <span style="opacity:.5;font-size:10px">▾</span>
+          </button>
+          <div class="menu-popup" id="menu-ai">
+            <div class="menu-item" data-skill="continue">续写正文</div>
+            <div class="menu-item" data-skill="polish">润色本章</div>
+            <div class="menu-item" data-skill="consistency">一致性检查</div>
+            <div class="menu-item" data-skill="outline">生成大纲</div>
+          </div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <div class="toolbar">
+        <button class="btn-icon" id="agentBtn" data-tooltip="Agent 管理">🤖</button>
+        <button class="btn-icon" id="settingsBtn" data-tooltip="设置">⚙</button>
+      </div>
     </header>
 
-    <div class="flex-1 flex overflow-hidden">
-      <!-- Sidebar -->
-      <aside class="w-60 border-r border-stone-200 bg-white flex flex-col">
-        <div class="p-3 text-xs uppercase tracking-wider text-stone-400">视图</div>
-        <nav id="nav" class="px-2 space-y-1">
-          <button data-view="books" class="nav-item nav-active">作品</button>
-          <button data-view="chapters" class="nav-item">章节</button>
-          <button data-view="lore" class="nav-item">设定库</button>
-          <button data-view="chat" class="nav-item">对话</button>
-          <button data-view="agents" class="nav-item">Agent</button>
-          <button data-view="vectors" class="nav-item">向量库</button>
-          <button data-view="skills" class="nav-item">技能</button>
-        </nav>
-        <div class="flex-1"></div>
-        <div class="p-3 text-xs text-stone-400 border-t border-stone-200">
-          <div>数据：<code id="dataPath" class="text-stone-500">…</code></div>
-          <button class="btn-link mt-1" id="openDataDir">打开数据目录</button>
-        </div>
+    <!-- 主体 -->
+    <div class="app-body">
+      <!-- 活动栏 -->
+      <nav class="activity-bar" id="activityBar">
+        <button class="ab-btn" data-tab="books" data-tooltip="作品">📚</button>
+        <button class="ab-btn" data-tab="chapters" data-tooltip="章节">📄</button>
+        <button class="ab-btn" data-tab="lore" data-tooltip="设定库">📖</button>
+        <button class="ab-btn" data-tab="chat" data-tooltip="对话">💬</button>
+        <button class="ab-btn" data-tab="agents" data-tooltip="Agent">🤖</button>
+        <button class="ab-btn" data-tab="vectors" data-tooltip="向量库">▦</button>
+        <button class="ab-btn" data-tab="skills" data-tooltip="技能">🧩</button>
+        <div class="spacer"></div>
+        <button class="btn-icon" id="bgOpacityBtn" data-tooltip="背景透明度">🌫</button>
+      </nav>
+
+      <!-- 侧栏 -->
+      <aside class="sidebar">
+        <div class="side-header" id="sideTitle">侧栏</div>
+        <div class="side-body" id="sidebar"></div>
       </aside>
 
-      <!-- Main -->
-      <main id="main" class="flex-1 overflow-auto p-6"></main>
+      <!-- 主区 -->
+      <main class="main-area">
+        <div class="main-body" id="main"></div>
+      </main>
     </div>
   </div>
 
-  <!-- 模板 -->
+  <!-- 视图模板 -->
   <template id="tpl-books">
-    <div class="space-y-4">
-      <div class="flex items-center gap-3">
-        <h2 class="text-xl font-semibold">作品</h2>
-        <button class="btn-primary" id="newBook">新建作品</button>
-      </div>
-      <div id="bookList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+    <div class="main-title">作品</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="btn-primary" id="newBook">＋ 新建作品</button>
+      <button class="btn-secondary" id="importBookBtn">导入…</button>
     </div>
+    <div id="bookList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px"></div>
   </template>
 
   <template id="tpl-chapters">
-    <div class="grid grid-cols-12 gap-4 h-full">
-      <div class="col-span-3 border border-stone-200 rounded-lg bg-white overflow-hidden flex flex-col">
-        <div class="p-3 border-b border-stone-200 flex items-center gap-2">
-          <select id="bookSelect" class="flex-1 bg-stone-50 border border-stone-200 rounded px-2 py-1 text-sm"></select>
-          <button class="btn-primary-sm" id="newChapter">+</button>
-        </div>
-        <div id="chapterList" class="flex-1 overflow-auto"></div>
+    <div class="editor-shell">
+      <div class="editor-head">
+        <input class="title" id="chapterTitle" placeholder="章节标题" />
+        <button class="btn-secondary" id="aiContinueBtn" data-tooltip="续写">✨ 续写</button>
+        <button class="btn-secondary" id="aiPolishBtn" data-tooltip="润色">🪄 润色</button>
+        <button class="btn-secondary" id="saveChapterBtn">保存</button>
       </div>
-      <div class="col-span-9 flex flex-col gap-3">
-        <div class="flex items-center gap-2">
-          <input id="chapterTitle" class="flex-1 px-3 py-2 border border-stone-200 rounded text-lg font-semibold" placeholder="章节标题" />
-          <button class="btn-secondary" id="aiContinue">AI 续写</button>
-          <button class="btn-primary" id="saveChapter">保存</button>
-        </div>
-        <textarea id="editor" class="flex-1 min-h-[60vh] p-4 border border-stone-200 rounded font-serif text-base leading-7 focus:outline-none focus:border-stone-400" placeholder="开始写吧…"></textarea>
-        <div id="loreHint" class="text-xs text-stone-500"></div>
+      <textarea id="editor" placeholder="开始写吧…"></textarea>
+      <div class="lore-hint" id="loreHint"></div>
+      <div class="editor-foot">
+        <span class="dot" id="saveDot"></span>
+        <span id="saveText">未保存</span>
+        <span class="hint" id="wordCount">0 字</span>
       </div>
     </div>
   </template>
 
   <template id="tpl-lore">
-    <div class="grid grid-cols-12 gap-4 h-full">
-      <div class="col-span-4 border border-stone-200 rounded-lg bg-white overflow-hidden flex flex-col">
-        <div class="p-3 border-b border-stone-200 flex items-center gap-2">
-          <select id="loreKind" class="bg-stone-50 border border-stone-200 rounded px-2 py-1 text-sm">
+    <div class="main-title">设定库</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;height:calc(100% - 50px)">
+      <div>
+        <label class="field"><span>分类</span>
+          <select id="loreKind">
             <option value="character">人物</option>
             <option value="location">地点</option>
             <option value="world">世界观</option>
             <option value="item">物品</option>
             <option value="other">其他</option>
           </select>
-          <button class="btn-primary-sm ml-auto" id="newLore">+</button>
-        </div>
-        <div id="loreList" class="flex-1 overflow-auto"></div>
+        </label>
+        <div id="loreList"></div>
       </div>
-      <div class="col-span-8 flex flex-col gap-3">
-        <input id="loreName" class="px-3 py-2 border border-stone-200 rounded text-lg font-semibold" placeholder="名称" />
-        <input id="loreKeywords" class="px-3 py-2 border border-stone-200 rounded text-sm" placeholder="触发关键词, 用逗号分隔" />
-        <textarea id="loreContent" class="flex-1 min-h-[50vh] p-3 border border-stone-200 rounded font-serif leading-7 focus:outline-none focus:border-stone-400" placeholder="设定内容…"></textarea>
-        <div class="flex justify-end gap-2">
-          <button class="btn-secondary" id="deleteLore">删除</button>
-          <button class="btn-primary" id="saveLore">保存</button>
+      <div>
+        <label class="field"><span>名称</span><input id="loreName" placeholder="名称" /></label>
+        <label class="field"><span>触发关键词 (逗号分隔)</span><input id="loreKeywords" placeholder="例如: 凌霄, 风火轮, 青云宗" /></label>
+        <label class="field" style="height:calc(100% - 200px);display:flex;flex-direction:column">
+          <span>设定内容</span>
+          <textarea id="loreContent" style="flex:1;min-height:0;font:14px/1.7 ui-serif,'Songti SC',serif" placeholder="设定内容…"></textarea>
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-link danger" id="deleteLoreBtn">删除</button>
+          <button class="btn-primary" id="saveLoreBtn">保存</button>
         </div>
       </div>
     </div>
   </template>
 
   <template id="tpl-chat">
-    <div class="grid grid-cols-12 gap-4 h-full">
-      <div class="col-span-3 border border-stone-200 rounded-lg bg-white flex flex-col overflow-hidden">
-        <div class="p-3 border-b border-stone-200 flex items-center gap-2">
-          <select id="agentSelect" class="flex-1 bg-stone-50 border border-stone-200 rounded px-2 py-1 text-sm"></select>
-          <button class="btn-primary-sm" id="newConv">+</button>
-        </div>
-        <div id="convList" class="flex-1 overflow-auto"></div>
+    <div class="main-title">对话</div>
+    <div style="display:grid;grid-template-columns:1fr;gap:8px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="flex:1;display:flex;align-items:center;gap:8px">
+          <span style="font-size:12px;color:var(--text-soft)">Agent:</span>
+          <select id="chatAgentSel" style="flex:1;max-width:240px"></select>
+        </label>
+        <button class="btn-secondary" id="newChatBtn">＋ 新对话</button>
       </div>
-      <div class="col-span-9 flex flex-col border border-stone-200 rounded-lg bg-white overflow-hidden">
-        <div id="messages" class="flex-1 overflow-auto p-4 space-y-3"></div>
-        <div class="border-t border-stone-200 p-3 flex gap-2">
-          <textarea id="chatInput" rows="2" class="flex-1 px-3 py-2 border border-stone-200 rounded resize-none focus:outline-none focus:border-stone-400" placeholder="说点什么… (Ctrl+Enter 发送)"></textarea>
-          <button class="btn-primary" id="sendChat">发送</button>
-        </div>
+      <div id="chatMessages" style="background:rgba(255,255,255,0.55);border:1px solid var(--border);border-radius:12px;padding:16px;min-height:60vh;display:flex;flex-direction:column;gap:8px;overflow:auto"></div>
+      <div style="display:flex;gap:8px;align-items:flex-end">
+        <textarea id="chatInput" rows="2" placeholder="说点什么… (Ctrl+Enter 发送)" style="flex:1"></textarea>
+        <button class="btn-primary" id="chatSendBtn">发送</button>
       </div>
     </div>
   </template>
 
   <template id="tpl-agents">
-    <div class="space-y-4">
-      <div class="flex items-center gap-3">
-        <h2 class="text-xl font-semibold">Agent</h2>
-        <button class="btn-primary" id="newAgent">新建</button>
-      </div>
-      <div id="agentList" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+    <div class="main-title">Agent</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn-primary" id="newAgentBtn">＋ 新建 Agent</button>
     </div>
+    <div id="agentList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px"></div>
   </template>
 
   <template id="tpl-vectors">
-    <div class="space-y-4">
-      <h2 class="text-xl font-semibold">本地向量库</h2>
-      <div class="bg-white border border-stone-200 rounded-lg p-4 space-y-3">
-        <div class="text-sm text-stone-600" id="vecStats">…</div>
-        <div class="flex gap-2">
-          <input id="vecSource" class="px-3 py-2 border border-stone-200 rounded text-sm flex-1" placeholder="来源名 (例如 book-1-chapter-3)" />
-          <button class="btn-secondary" id="vecImport">导入当前章节</button>
-        </div>
-        <div class="flex gap-2">
-          <input id="vecQuery" class="px-3 py-2 border border-stone-200 rounded text-sm flex-1" placeholder="搜索关键字" />
-          <button class="btn-primary" id="vecSearch">搜索</button>
-        </div>
-        <div id="vecHits" class="space-y-2"></div>
+    <div class="main-title">本地向量库</div>
+    <div class="sheet">
+      <div id="vecStats" style="font-size:12.5px;color:var(--text-soft);margin-bottom:12px">…</div>
+      <label class="field"><span>来源</span><input id="vecSource" placeholder="例如: book-1-chapter-3" /></label>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button class="btn-secondary" id="vecImportBtn">导入当前章节</button>
       </div>
+      <label class="field"><span>查询</span>
+        <div style="display:flex;gap:6px"><input id="vecQuery" placeholder="搜索关键字" /><button class="btn-primary" id="vecSearchBtn">搜索</button></div>
+      </label>
+      <div id="vecHits" style="display:flex;flex-direction:column;gap:8px"></div>
     </div>
   </template>
 
   <template id="tpl-skills">
-    <div class="space-y-4">
-      <h2 class="text-xl font-semibold">本地技能 (Markdown)</h2>
-      <div class="text-xs text-stone-500">技能位于 <code>%APPDATA%/ZhinaiNovelEditor/skills/&lt;name&gt;/SKILL.md</code>，由 Agent 按需读取。</div>
-      <div id="skillList" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
-    </div>
+    <div class="main-title">技能</div>
+    <div style="font-size:12px;color:var(--text-soft);margin-bottom:12px">技能位于 <code>%APPDATA%\ZhinaiNovelEditor\skills\&lt;name&gt;\SKILL.md</code>, 由 Agent 按需读取。</div>
+    <div id="skillList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
   </template>
 
   <template id="tpl-settings">
-    <div class="space-y-4 max-w-2xl">
-      <h2 class="text-xl font-semibold">设置</h2>
-      <div class="bg-white border border-stone-200 rounded-lg p-4 space-y-3">
-        <label class="block">
-          <span class="text-sm text-stone-600">Base URL</span>
-          <input id="cfgBaseURL" class="mt-1 w-full px-3 py-2 border border-stone-200 rounded" placeholder="https://api.openai.com/v1" />
-        </label>
-        <label class="block">
-          <span class="text-sm text-stone-600">API Key</span>
-          <input id="cfgApiKey" type="password" class="mt-1 w-full px-3 py-2 border border-stone-200 rounded" />
-        </label>
-        <label class="block">
-          <span class="text-sm text-stone-600">Model</span>
-          <input id="cfgModel" class="mt-1 w-full px-3 py-2 border border-stone-200 rounded" placeholder="gpt-4o-mini" />
-        </label>
-        <div class="flex gap-2">
-          <button class="btn-secondary" id="cfgTest">测试连接</button>
-          <button class="btn-primary" id="cfgSave">保存</button>
-          <span id="cfgTestResult" class="text-sm self-center"></span>
-        </div>
+    <div class="main-title">设置</div>
+    <div class="sheet">
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">LLM 模型</h3>
+      <label class="field"><span>Base URL</span><input id="cfgBaseURL" placeholder="https://api.openai.com/v1" /></label>
+      <label class="field"><span>API Key</span><input type="password" id="cfgApiKey" /></label>
+      <label class="field"><span>Model</span><input id="cfgModel" placeholder="gpt-4o-mini" /></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn-secondary" id="cfgTestBtn">测试连接</button>
+        <button class="btn-primary" id="cfgSaveBtn">保存</button>
+        <span id="cfgTestResult" style="font-size:12px;color:var(--text-soft)"></span>
       </div>
+      <hr style="margin:18px 0;border:none;border-top:1px solid var(--border)" />
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">外观</h3>
+      <label class="field"><span>背景可见度 (0 - 1)</span>
+        <input type="number" id="bgOpacity" min="0" max="1" step="0.05" />
+      </label>
+      <label class="field"><span>背景图片路径 (留空用默认)</span><input id="bgPath" placeholder="可选: 本地图片绝对路径" /></label>
     </div>
   </template>
 

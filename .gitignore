@@ -21,3 +21,7 @@ xcuserdata/
 # Win/ third-party fetched deps (use win/scripts/fetch_deps.ps1 to set up)
 win/third_party/
 win/build/
+# win/web/img/ 在 build 时从 ../assets/ 拷贝, 不入 git
+win/web/img/
+# app.ico 由 build 时从 assets/AppIcon.png 生成, 不入 git
+win/resources/
