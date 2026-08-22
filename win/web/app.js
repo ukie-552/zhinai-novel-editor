@@ -33,7 +33,7 @@ async function callRest(method, params) {
   const map = {
     'books.list':           ['GET',  '/api/books'],
     'books.create':         ['POST', '/api/books', params],
-    'books.update':         ['PUT',  '/api/books/' + params.id, { title: params.title, author: params.author, summary: params.summary }],
+    'books.update':         ['PUT',  '/api/books/' + params.id, params],
     'books.delete':         ['DELETE', '/api/books/' + params.id],
     'chapters.list':        ['GET',  '/api/books/' + params.bookId + '/chapters'],
     'chapters.create':      ['POST', '/api/books/' + params.bookId + '/chapters', { title: params.title, orderIndex: params.orderIndex }],
@@ -193,13 +193,89 @@ async function createConvFlow() {
   else { loadSidebar(); loadMain(); }
 }
 async function createBookFlow() {
-  const title = prompt('作品名');
-  if (!title) return;
-  const r = await api.books.create({ title, author: '', summary: '' });
-  State.currentBookId = r.id;
-  State.bookTitle = title;
-  updateBookTitle();
-  switchTab('books');
+  // 弹完整表单 (跟 macOS NewBookSheet 对齐)
+  showBookModal(null);
+}
+async function editBookFlow(book) {
+  showBookModal(book);
+}
+
+function showBookModal(book) {
+  const isEdit = !!book;
+  const m = book || { title: '', author: '', summary: '', platform: 'other', targetChapters: 0, chapterWordCount: 3000, genres: '' };
+  let modal = document.getElementById('bookModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'bookModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999';
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:520px;width:90%;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+        <strong style="font-size:14px">${isEdit ? '编辑作品' : '新建作品'}</strong>
+        <span style="flex:1"></span>
+        <button class="btn-icon" id="bookModalClose">✕</button>
+      </div>
+      <div style="padding:18px 22px;display:flex;flex-direction:column;gap:12px">
+        <label class="field"><span>书名 <span style="color:#b91c1c">*</span></span>
+          <input id="bmTitle" placeholder="例如: 雾城来信" value="${escapeHtml(m.title)}" />
+        </label>
+        <label class="field"><span>简介 (可选)</span>
+          <textarea id="bmSummary" rows="3" style="font:13px/1.6 ui-serif,'Songti SC',serif;min-height:60px;resize:vertical">${escapeHtml(m.summary || '')}</textarea>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <label class="field"><span>作者</span><input id="bmAuthor" value="${escapeHtml(m.author || '')}" placeholder="可选" /></label>
+          <label class="field"><span>题材</span><input id="bmGenre" value="${escapeHtml(m.genres || '')}" placeholder="例如: 玄幻" /></label>
+        </div>
+        <label class="field"><span>目标平台</span>
+          <select id="bmPlatform">
+            <option value="tomato">番茄</option>
+            <option value="qidian">起点</option>
+            <option value="feilu">飞卢</option>
+            <option value="other">其他 / 未定</option>
+          </select>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <label class="field"><span>目标章节</span>
+            <input type="number" id="bmTargetCh" min="0" value="${m.targetChapters || 0}" />
+          </label>
+          <label class="field"><span>每章字数</span>
+            <input type="number" id="bmChapterWords" min="0" step="500" value="${m.chapterWordCount || 3000}" />
+          </label>
+        </div>
+      </div>
+      <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" id="bookModalCancel">取消</button>
+        <button class="btn-primary" id="bookModalSave">${isEdit ? '保存' : '创建'}</button>
+      </div>
+    </div>
+  `;
+  modal.style.display = 'flex';
+  $('#bmPlatform').value = m.platform || 'other';
+  const close = () => { modal.style.display = 'none'; };
+  modal.querySelector('#bookModalClose').onclick = close;
+  modal.querySelector('#bookModalCancel').onclick = close;
+  modal.querySelector('#bookModalSave').onclick = async () => {
+    const title = $('#bmTitle').value.trim();
+    if (!title) { showToast('书名必填', true); return; }
+    const payload = {
+      title, author: $('#bmAuthor').value.trim(), summary: $('#bmSummary').value.trim(),
+      platform: $('#bmPlatform').value, genres: $('#bmGenre').value.trim(),
+      targetChapters: parseInt($('#bmTargetCh').value, 10) || 0,
+      chapterWordCount: parseInt($('#bmChapterWords').value, 10) || 0,
+    };
+    if (isEdit) await api.books.update({ id: m.id, ...payload });
+    else {
+      const r = await api.books.create(payload);
+      State.currentBookId = r.id; State.bookTitle = title; updateBookTitle();
+    }
+    close();
+    showToast(isEdit ? '已保存' : '已创建');
+    if (State.tab === 'books') renderBooks();
+    else switchTab('books');
+  };
+  setTimeout(() => $('#bmTitle').focus(), 30);
 }
 
 // ---- 视图切换 ----
@@ -263,10 +339,12 @@ async function renderBooks() {
     el.className = 'card';
     el.innerHTML = `
       <div style="font-size:15px;font-weight:600">${escapeHtml(b.title)}</div>
-      <div style="font-size:11.5px;color:var(--text-soft);margin-top:2px">${escapeHtml(b.author || '未署名')}</div>
+      <div style="font-size:11.5px;color:var(--text-soft);margin-top:2px">${escapeHtml(b.author || '未署名')}${b.platform && b.platform !== 'other' ? ' · ' + platformLabel(b.platform) : ''}${b.genres ? ' · ' + escapeHtml(b.genres) : ''}</div>
       <div style="font-size:12.5px;color:var(--text-soft);margin-top:8px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${escapeHtml(b.summary || '—')}</div>
+      ${b.targetChapters ? `<div style="font-size:11.5px;color:var(--text-faint);margin-top:6px">目标 ${b.targetChapters} 章 · 每章 ${b.chapterWordCount || '?'} 字</div>` : ''}
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end">
         <button class="btn-link" data-act="open">打开</button>
+        <button class="btn-link" data-act="edit">编辑</button>
         <button class="btn-link danger" data-act="del">删除</button>
       </div>
     `;
@@ -275,6 +353,7 @@ async function renderBooks() {
       State.currentBookId = b.id; State.bookTitle = b.title; updateBookTitle();
       switchTab('chapters');
     });
+    el.querySelector('[data-act="edit"]').addEventListener('click', (e) => { e.stopPropagation(); editBookFlow(b); });
     el.querySelector('[data-act="del"]').addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!confirm('删除 "' + b.title + '"?')) return;
@@ -1081,6 +1160,10 @@ function inferProvider(providers, baseURL, model) {
     if (model.startsWith('glm-')) return 'zhipu';
   }
   return 'custom';
+}
+
+function platformLabel(p) {
+  return { tomato: '番茄', qidian: '起点', feilu: '飞卢', other: '其他' }[p] || p;
 }
 
 // ---- 启动 ----

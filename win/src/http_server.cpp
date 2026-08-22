@@ -43,7 +43,10 @@ void setCORS(httplib::Response& res) {
 json bookToJson(const db::Book& b) {
     return {
         {"id", b.id}, {"title", b.title}, {"author", b.author},
-        {"summary", b.summary}, {"createdAt", b.createdAt}, {"updatedAt", b.updatedAt}
+        {"summary", b.summary}, {"platform", b.platform},
+        {"targetChapters", b.targetChapters}, {"chapterWordCount", b.chapterWordCount},
+        {"genres", b.genres},
+        {"createdAt", b.createdAt}, {"updatedAt", b.updatedAt}
     };
 }
 json chapterToJson(const db::Chapter& c) {
@@ -86,7 +89,11 @@ void registerBooks(httplib::Server& s) {
     s.Post("/api/books", [](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; res.set_content("{\"error\":\"bad json\"}", "application/json"); return; }
-        auto id = db::createBook(j.value("title", "未命名"), j.value("author", ""), j.value("summary", ""));
+        auto id = db::createBook(
+            j.value("title", "未命名"), j.value("author", ""), j.value("summary", ""),
+            j.value("platform", ""), j.value("targetChapters", 0),
+            j.value("chapterWordCount", 0), j.value("genres", "")
+        );
         res.set_content(json{{"id", id}}.dump(), "application/json");
     });
     s.Get(R"(/api/books/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
@@ -99,7 +106,11 @@ void registerBooks(httplib::Server& s) {
         auto id = std::stoll(req.matches[1]);
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; return; }
-        bool ok = db::updateBook(id, j.value("title", ""), j.value("author", ""), j.value("summary", ""));
+        bool ok = db::updateBook(id,
+            j.value("title", ""), j.value("author", ""), j.value("summary", ""),
+            j.value("platform", ""), j.value("targetChapters", 0),
+            j.value("chapterWordCount", 0), j.value("genres", "")
+        );
         res.set_content(json{{"ok", ok}}.dump(), "application/json");
     });
     s.Delete(R"(/api/books/(\d+))", [](const httplib::Request& req, httplib::Response& res) {

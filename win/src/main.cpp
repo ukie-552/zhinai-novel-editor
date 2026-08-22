@@ -84,7 +84,7 @@ std::string dispatch(const std::string& reqJson) {
     else if (entity == "books" && action == "create")    { verb = "POST"; path = "/api/books"; body = params.dump(); }
     else if (entity == "books" && action == "update")    {
         verb = "PUT"; path = "/api/books/" + params.value("id", std::string("0"));
-        body = json{{"title", params.value("title", "")}, {"author", params.value("author", "")}, {"summary", params.value("summary", "")}}.dump();
+        body = params.dump();
     }
     else if (entity == "books" && action == "delete")    { verb = "DELETE"; path = "/api/books/" + params.value("id", std::string("0")); }
     else if (entity == "chapters" && action == "list")   { verb = "GET"; path = "/api/books/" + params.value("bookId", std::string("0")) + "/chapters"; }

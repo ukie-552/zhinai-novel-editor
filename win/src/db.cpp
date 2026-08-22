@@ -106,6 +106,25 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, created_at);
 )sql";
 
+// 增量迁移: 给 books 加 metadata 列 (platform, target_chapters, chapter_word_count, genres)
+static void migrateBooksMetadata(sqlite3* db) {
+    auto hasColumn = [&](const char* col) -> bool {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, "PRAGMA table_info(books)", -1, &st, nullptr) != SQLITE_OK) return false;
+        bool found = false;
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const unsigned char* name = sqlite3_column_text(st, 1);
+            if (name && std::string(reinterpret_cast<const char*>(name)) == col) { found = true; break; }
+        }
+        sqlite3_finalize(st);
+        return found;
+    };
+    if (!hasColumn("platform"))        sqlite3_exec(db, "ALTER TABLE books ADD COLUMN platform TEXT", nullptr, nullptr, nullptr);
+    if (!hasColumn("target_chapters")) sqlite3_exec(db, "ALTER TABLE books ADD COLUMN target_chapters INTEGER", nullptr, nullptr, nullptr);
+    if (!hasColumn("chapter_word_count")) sqlite3_exec(db, "ALTER TABLE books ADD COLUMN chapter_word_count INTEGER", nullptr, nullptr, nullptr);
+    if (!hasColumn("genres"))          sqlite3_exec(db, "ALTER TABLE books ADD COLUMN genres TEXT", nullptr, nullptr, nullptr);
+}
+
 }  // namespace
 
 bool init() {
@@ -121,6 +140,7 @@ bool init() {
     exec("PRAGMA foreign_keys = ON;");
     exec("PRAGMA journal_mode = WAL;");
     exec(kSchema);
+    migrateBooksMetadata(g_db);
     platform::log("INFO", "db.init: " + path);
     return true;
 }
@@ -134,61 +154,72 @@ void shutdown() {
 }
 
 // ---- Book ----
+static void fillBookFromStmt(Book& b, sqlite3_stmt* st) {
+    b.id = sqlite3_column_int64(st, 0);
+    b.title = colText(st, 1);
+    b.author = colText(st, 2);
+    b.summary = colText(st, 3);
+    b.platform = colText(st, 4);
+    b.targetChapters = sqlite3_column_int(st, 5);
+    b.chapterWordCount = sqlite3_column_int(st, 6);
+    b.genres = colText(st, 7);
+    b.createdAt = sqlite3_column_int64(st, 8);
+    b.updatedAt = sqlite3_column_int64(st, 9);
+}
+
 std::vector<Book> listBooks() {
     std::lock_guard<std::mutex> lk(g_mtx);
     std::vector<Book> out;
-    PREP("SELECT id,title,author,summary,created_at,updated_at FROM books ORDER BY id DESC")
+    PREP("SELECT id,title,author,summary,platform,target_chapters,chapter_word_count,genres,created_at,updated_at FROM books ORDER BY id DESC")
     while (sqlite3_step(st.p) == SQLITE_ROW) {
-        Book b;
-        b.id = sqlite3_column_int64(st.p, 0);
-        b.title = colText(st.p, 1);
-        b.author = colText(st.p, 2);
-        b.summary = colText(st.p, 3);
-        b.createdAt = sqlite3_column_int64(st.p, 4);
-        b.updatedAt = sqlite3_column_int64(st.p, 5);
-        out.push_back(std::move(b));
+        Book b; fillBookFromStmt(b, st.p); out.push_back(std::move(b));
     }
     return out;
 }
 
 std::optional<Book> getBook(long long id) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    PREP("SELECT id,title,author,summary,created_at,updated_at FROM books WHERE id=?")
+    PREP("SELECT id,title,author,summary,platform,target_chapters,chapter_word_count,genres,created_at,updated_at FROM books WHERE id=?")
     sqlite3_bind_int64(st.p, 1, id);
     if (sqlite3_step(st.p) == SQLITE_ROW) {
-        Book b;
-        b.id = sqlite3_column_int64(st.p, 0);
-        b.title = colText(st.p, 1);
-        b.author = colText(st.p, 2);
-        b.summary = colText(st.p, 3);
-        b.createdAt = sqlite3_column_int64(st.p, 4);
-        b.updatedAt = sqlite3_column_int64(st.p, 5);
-        return b;
+        Book b; fillBookFromStmt(b, st.p); return b;
     }
     return std::nullopt;
 }
 
-long long createBook(const std::string& title, const std::string& author, const std::string& summary) {
+long long createBook(const std::string& title, const std::string& author, const std::string& summary,
+                     const std::string& platform, int targetChapters, int chapterWordCount,
+                     const std::string& genres) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    PREP("INSERT INTO books(title,author,summary,created_at,updated_at) VALUES(?,?,?,?,?)")
+    PREP("INSERT INTO books(title,author,summary,platform,target_chapters,chapter_word_count,genres,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
     bindText(st.p, 1, title);
     bindText(st.p, 2, author);
     bindText(st.p, 3, summary);
+    bindText(st.p, 4, platform);
+    sqlite3_bind_int(st.p, 5, targetChapters);
+    sqlite3_bind_int(st.p, 6, chapterWordCount);
+    bindText(st.p, 7, genres);
     auto t = nowSec();
-    sqlite3_bind_int64(st.p, 4, t);
-    sqlite3_bind_int64(st.p, 5, t);
+    sqlite3_bind_int64(st.p, 8, t);
+    sqlite3_bind_int64(st.p, 9, t);
     if (sqlite3_step(st.p) != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(g_db);
 }
 
-bool updateBook(long long id, const std::string& title, const std::string& author, const std::string& summary) {
+bool updateBook(long long id, const std::string& title, const std::string& author, const std::string& summary,
+                const std::string& platform, int targetChapters, int chapterWordCount,
+                const std::string& genres) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    PREP("UPDATE books SET title=?,author=?,summary=?,updated_at=? WHERE id=?")
+    PREP("UPDATE books SET title=?,author=?,summary=?,platform=?,target_chapters=?,chapter_word_count=?,genres=?,updated_at=? WHERE id=?")
     bindText(st.p, 1, title);
     bindText(st.p, 2, author);
     bindText(st.p, 3, summary);
-    sqlite3_bind_int64(st.p, 4, nowSec());
-    sqlite3_bind_int64(st.p, 5, id);
+    bindText(st.p, 4, platform);
+    sqlite3_bind_int(st.p, 5, targetChapters);
+    sqlite3_bind_int(st.p, 6, chapterWordCount);
+    bindText(st.p, 7, genres);
+    sqlite3_bind_int64(st.p, 8, nowSec());
+    sqlite3_bind_int64(st.p, 9, id);
     return sqlite3_step(st.p) == SQLITE_DONE;
 }
 

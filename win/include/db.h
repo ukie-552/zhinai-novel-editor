@@ -21,13 +21,21 @@ struct Book {
     std::string title;
     std::string author;
     std::string summary;
+    std::string platform;            // tomato/qidian/feilu/other
+    int targetChapters = 0;
+    int chapterWordCount = 0;
+    std::string genres;              // 逗号分隔
     long long createdAt = 0;
     long long updatedAt = 0;
 };
 std::vector<Book> listBooks();
 std::optional<Book> getBook(long long id);
-long long createBook(const std::string& title, const std::string& author, const std::string& summary);
-bool updateBook(long long id, const std::string& title, const std::string& author, const std::string& summary);
+long long createBook(const std::string& title, const std::string& author, const std::string& summary,
+                     const std::string& platform = "", int targetChapters = 0, int chapterWordCount = 0,
+                     const std::string& genres = "");
+bool updateBook(long long id, const std::string& title, const std::string& author, const std::string& summary,
+                const std::string& platform = "", int targetChapters = 0, int chapterWordCount = 0,
+                const std::string& genres = "");
 bool deleteBook(long long id);
 
 // ---- 章节 (Chapter) ----
