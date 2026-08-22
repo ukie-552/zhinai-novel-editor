@@ -1,4 +1,4 @@
-# 📚 织奈编辑器
+<h1><img src="assets/AppIcon.png" alt="织奈编辑器图标" width="44" height="44" align="absmiddle"> 织奈编辑器</h1>
 
 织奈编辑器是一款 macOS 小说写作工具，用于管理作品、章节和设定资料，也可以连接常用模型协助写作。作品数据默认保存在本机喵～
 
