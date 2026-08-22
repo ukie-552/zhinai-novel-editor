@@ -177,17 +177,41 @@
   </template>
 
   <template id="tpl-vectors">
-    <div class="main-title">本地向量库</div>
-    <div class="sheet">
-      <div id="vecStats" style="font-size:12.5px;color:var(--text-soft);margin-bottom:12px">…</div>
-      <label class="field"><span>来源</span><input id="vecSource" placeholder="例如: book-1-chapter-3" /></label>
-      <div style="display:flex;gap:8px;margin-bottom:14px">
-        <button class="btn-secondary" id="vecImportBtn">导入当前章节</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;height:calc(100% - 30px)">
+      <!-- 库 + 章节列表 -->
+      <div style="display:flex;flex-direction:column;gap:8px;overflow:hidden">
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="vecLibSel" style="flex:1"></select>
+          <button class="btn-primary-sm" id="vecNewLibBtn">＋ 库</button>
+          <button class="btn-link danger" id="vecDelLibBtn">删</button>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-soft)" id="vecLibInfo"></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn-secondary" id="vecNewChBtn" style="flex:1">＋ 新章节</button>
+          <button class="btn-link" id="vecImportTxtBtn">导入 TXT…</button>
+        </div>
+        <div id="vecChapterList" style="flex:1;overflow:auto;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.5)"></div>
       </div>
-      <label class="field"><span>查询</span>
-        <div style="display:flex;gap:6px"><input id="vecQuery" placeholder="搜索关键字" /><button class="btn-primary" id="vecSearchBtn">搜索</button></div>
-      </label>
-      <div id="vecHits" style="display:flex;flex-direction:column;gap:8px"></div>
+      <!-- 编辑/搜索 -->
+      <div style="display:flex;flex-direction:column;gap:8px;overflow:hidden">
+        <div id="vecEditArea" style="flex:1;display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;gap:6px;align-items:center">
+            <span style="font-size:11.5px;color:var(--text-soft)">章节 <span id="vecChNo">-</span></span>
+            <span style="flex:1"></span>
+            <span style="font-size:11.5px;color:var(--text-faint)" id="vecWordCount">0 字</span>
+            <button class="btn-primary" id="vecSaveBtn">保存并重建向量</button>
+          </div>
+          <input id="vecTitle" placeholder="章节标题" style="font-size:15px;font-weight:600" />
+          <textarea id="vecContent" style="flex:1;min-height:0;font:14px/1.7 ui-serif,'Songti SC',serif;resize:none" placeholder="章节正文, 或从左侧选章节"></textarea>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:8px;display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;gap:6px">
+            <input id="vecQuery" placeholder="跨章节搜索" style="flex:1" />
+            <button class="btn-secondary" id="vecSearchBtn">搜索</button>
+          </div>
+          <div id="vecHits" style="max-height:160px;overflow:auto;display:flex;flex-direction:column;gap:4px"></div>
+        </div>
+      </div>
     </div>
   </template>
 

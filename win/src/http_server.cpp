@@ -502,6 +502,7 @@ void registerSkills(httplib::Server& s) {
 }
 
 void registerVectors(httplib::Server& s) {
+    // 旧 API 保留 (单一索引)
     s.Post("/api/vectors/import", [](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; return; }
@@ -522,6 +523,83 @@ void registerVectors(httplib::Server& s) {
     });
     s.Get("/api/vectors/stats", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(vector::stats().dump(), "application/json");
+    });
+
+    // 新 API: 库 + 章节 (多库支持)
+    s.Get("/api/vectors/v2/libraries", [&s](const httplib::Request&, httplib::Response& res) {
+        (void)s;
+        json arr = json::array();
+        for (const auto& L : db::listVectorLibraries()) {
+            arr.push_back({
+                {"id", L.id}, {"title", L.title}, {"author", L.author},
+                {"category", L.category}, {"summary", L.summary},
+                {"chunkCount", L.chunkCount},
+                {"createdAt", L.createdAt}, {"updatedAt", L.updatedAt}
+            });
+        }
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post("/api/vectors/v2/libraries", [](const httplib::Request& req, httplib::Response& res) {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto id = db::createVectorLibrary(
+            j.value("title", "新向量库"), j.value("author", ""),
+            j.value("category", "novel"), j.value("summary", "")
+        );
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Put(R"(/api/vectors/v2/libraries/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        bool ok = db::updateVectorLibrary(id,
+            j.value("title", ""), j.value("author", ""), j.value("category", ""), j.value("summary", ""));
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/vectors/v2/libraries/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteVectorLibrary(id)}}.dump(), "application/json");
+    });
+
+    s.Get(R"(/api/vectors/v2/libraries/(\d+)/chapters)", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        json arr = json::array();
+        for (const auto& c : db::listVectorChapters(id)) {
+            arr.push_back({
+                {"id", c.id}, {"libraryId", c.libraryId}, {"no", c.no},
+                {"title", c.title}, {"content", c.content}, {"updatedAt", c.updatedAt}
+            });
+        }
+        res.set_content(arr.dump(), "application/json");
+    });
+    s.Post(R"(/api/vectors/v2/libraries/(\d+)/chapters)", [](const httplib::Request& req, httplib::Response& res) {
+        auto libId = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        auto id = db::createVectorChapter(libId,
+            j.value("no", 0), j.value("title", "新章节"), j.value("content", ""));
+        res.set_content(json{{"id", id}}.dump(), "application/json");
+    });
+    s.Get(R"(/api/vectors/v2/chapters/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto opt = db::getVectorChapter(id);
+        if (!opt) { res.status = 404; return; }
+        const auto& c = *opt;
+        res.set_content(json{
+            {"id", c.id}, {"libraryId", c.libraryId}, {"no", c.no},
+            {"title", c.title}, {"content", c.content}, {"updatedAt", c.updatedAt}
+        }.dump(), "application/json");
+    });
+    s.Put(R"(/api/vectors/v2/chapters/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded()) { res.status = 400; return; }
+        bool ok = db::updateVectorChapter(id, j.value("title", ""), j.value("content", ""));
+        res.set_content(json{{"ok", ok}}.dump(), "application/json");
+    });
+    s.Delete(R"(/api/vectors/v2/chapters/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
+        auto id = std::stoll(req.matches[1]);
+        res.set_content(json{{"ok", db::deleteVectorChapter(id)}}.dump(), "application/json");
     });
 }
 

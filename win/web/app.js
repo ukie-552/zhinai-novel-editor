@@ -1112,36 +1112,192 @@ async function renderSearch() {
   setTimeout(() => input.focus(), 50);
 }
 
-// ---- Vectors ----
+// ---- Vectors (库 + 章节) ----
+let VecState = { libId: null, chId: null, libs: [], chapters: [] };
+
 async function renderVectorsSidebar(sb) {
-  const stats = await api.vectors.stats();
-  sb.innerHTML = `<div style="padding:8px;font-size:11.5px;color:var(--text-soft)">索引: <code>${escapeHtml(stats.index || '')}</code><br>块数: ${stats.chunks}</div>`;
-}
-async function renderVectors() {
-  const stats = await api.vectors.stats();
-  $('#vecStats').textContent = `索引路径: ${stats.index} | 共 ${stats.chunks} 块`;
-  $('#vecImportBtn').addEventListener('click', async () => {
-    if (!State.chapterId) { showToast('先在章节视图选一章', true); return; }
-    const r = await fetch('/api/chapters/' + State.chapterId);
-    const c = await r.json();
-    const source = $('#vecSource').value || ('chapter-' + c.id);
-    await api.vectors.import({ source, text: c.content || '' });
-    showToast('已导入');
-    renderVectors(); renderVectorsSidebar($('#sidebar'));
-  });
-  $('#vecSearchBtn').addEventListener('click', async () => {
-    const q = $('#vecQuery').value; if (!q) return;
-    const hits = await api.vectors.search({ query: q, topK: 8 });
-    const box = $('#vecHits'); box.innerHTML = '';
-    for (const h of (hits || [])) {
+  try {
+    const libs = await (await fetch('/api/vectors/v2/libraries')).json();
+    if (!libs || !libs.length) {
+      sb.innerHTML = '<div style="padding:12px;color:var(--text-soft);font-size:12.5px">还没有向量库.<br>点主区 "＋ 库" 新建.</div>';
+      return;
+    }
+    for (const L of libs) {
       const el = document.createElement('div');
-      el.style.cssText = 'padding:8px 10px;background:rgba(255,255,255,0.6);border:1px solid var(--border);border-radius:6px;';
-      el.innerHTML = `<div style="font-size:11px;color:var(--text-soft)">${escapeHtml(h.source)} · 分数 ${h.score.toFixed(2)}</div><div style="margin-top:2px">${escapeHtml(h.snippet)}…</div>`;
+      el.className = 'list-item' + (VecState.libId === L.id ? ' active' : '');
+      el.innerHTML = `<span class="title">▦ ${escapeHtml(L.title)}</span>
+        <span style="font-size:10.5px;color:var(--text-faint)">${escapeHtml(L.author || '')}</span>`;
+      el.addEventListener('click', () => {
+        VecState.libId = L.id;
+        const sel = $('#vecLibSel'); if (sel) sel.value = L.id;
+        if (sel) sel.dispatchEvent(new Event('change'));
+        renderVectorsSidebar(sb);
+      });
+      sb.appendChild(el);
+    }
+  } catch (e) {
+    sb.innerHTML = '<div style="padding:8px;color:var(--text-soft);font-size:12px">加载失败</div>';
+  }
+}
+
+async function loadVectorLibs() {
+  VecState.libs = (await (await fetch('/api/vectors/v2/libraries')).json()) || [];
+  const sel = $('#vecLibSel');
+  sel.innerHTML = VecState.libs.length
+    ? VecState.libs.map(L => `<option value="${L.id}">${escapeHtml(L.title)}</option>`).join('')
+    : '<option value="">(无库, 点 + 新建)</option>';
+  if (!VecState.libId && VecState.libs.length) VecState.libId = VecState.libs[0].id;
+  sel.value = VecState.libId || '';
+  updateVecLibInfo();
+}
+
+function updateVecLibInfo() {
+  const L = VecState.libs.find(x => x.id === VecState.libId);
+  const el = $('#vecLibInfo');
+  if (el) el.textContent = L ? `${escapeHtml(L.author || '未署名')} · ${L.chapterCount || 0} 章节` : '';
+}
+
+async function loadVectorChapters() {
+  if (!VecState.libId) { VecState.chapters = []; return; }
+  const r = await fetch('/api/vectors/v2/libraries/' + VecState.libId + '/chapters');
+  VecState.chapters = (await r.json()) || [];
+  const box = $('#vecChapterList');
+  box.innerHTML = '';
+  VecState.chapters.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'list-item' + (VecState.chId === c.id ? ' active' : '');
+    el.innerHTML = `<span class="num">${c.no}</span><span class="title">${escapeHtml(c.title)}</span>
+      <span class="actions"><button class="btn-icon" data-act="del" title="删除">✕</button></span>`;
+    el.addEventListener('click', () => openVectorChapter(c));
+    el.querySelector('[data-act="del"]').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('删除章节 ' + c.title + '?')) return;
+      await fetch('/api/vectors/v2/chapters/' + c.id, { method: 'DELETE' });
+      if (VecState.chId === c.id) VecState.chId = null;
+      loadVectorChapters();
+    });
+    box.appendChild(el);
+  });
+}
+
+function openVectorChapter(c) {
+  VecState.chId = c.id;
+  $('#vecChNo').textContent = c.no;
+  $('#vecTitle').value = c.title || '';
+  $('#vecContent').value = c.content || '';
+  updateVecWordCount();
+  loadVectorChapters();
+}
+function updateVecWordCount() {
+  const t = ($('#vecContent')?.value || '').replace(/\s+/g, '').length;
+  $('#vecWordCount').textContent = t + ' 字';
+}
+
+async function renderVectors() {
+  await loadVectorLibs();
+  await loadVectorChapters();
+  // 库选择
+  $('#vecLibSel').addEventListener('change', () => {
+    VecState.libId = parseInt($('#vecLibSel').value) || null;
+    VecState.chId = null;
+    updateVecLibInfo();
+    loadVectorChapters();
+    // 清空编辑区
+    $('#vecChNo').textContent = '-';
+    $('#vecTitle').value = '';
+    $('#vecContent').value = '';
+    updateVecWordCount();
+  });
+  $('#vecNewLibBtn').addEventListener('click', async () => {
+    const title = prompt('向量库名 (参考作品名)', '新参考书');
+    if (!title) return;
+    const r = await fetch('/api/vectors/v2/libraries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, author: '', category: 'novel', summary: '' }) });
+    const j = await r.json();
+    VecState.libId = j.id;
+    await loadVectorLibs();
+    $('#vecLibSel').value = j.id;
+    updateVecLibInfo();
+    await loadVectorChapters();
+  });
+  $('#vecDelLibBtn').addEventListener('click', async () => {
+    if (!VecState.libId) { showToast('没选库', true); return; }
+    if (!confirm('删除当前向量库 (含所有章节)?')) return;
+    await fetch('/api/vectors/v2/libraries/' + VecState.libId, { method: 'DELETE' });
+    VecState.libId = null; VecState.chId = null;
+    await loadVectorLibs();
+    await loadVectorChapters();
+    $('#vecChNo').textContent = '-';
+    $('#vecTitle').value = '';
+    $('#vecContent').value = '';
+  });
+  $('#vecNewChBtn').addEventListener('click', async () => {
+    if (!VecState.libId) { showToast('先建库', true); return; }
+    const no = VecState.chapters.length ? (VecState.chapters[VecState.chapters.length-1].no + 1) : 1;
+    const r = await fetch('/api/vectors/v2/libraries/' + VecState.libId + '/chapters', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ no, title: '第 ' + no + ' 章', content: '' })
+    });
+    const j = await r.json();
+    await loadVectorChapters();
+    openVectorChapter({ id: j.id, no, title: '第 ' + no + ' 章', content: '' });
+  });
+  $('#vecImportTxtBtn').addEventListener('click', async () => {
+    if (!VecState.libId) { showToast('先建库', true); return; }
+    const path = prompt('TXT 文件绝对路径 (UTF-8)\n例如: C:\\Users\\me\\novel.txt');
+    if (!path) return;
+    try {
+      // 简单 fetch 上传, 走 /api/vectors/v2/libraries/<id>/importTxt
+      // 后端还没这个端点, 先让用户把内容粘进新章节
+      showToast('暂未实现, 请新建章节后粘贴内容', true);
+    } catch (e) { showToast('导入失败: ' + e.message, true); }
+  });
+  $('#vecSaveBtn').addEventListener('click', async () => {
+    if (!VecState.chId) { showToast('先选章节', true); return; }
+    const r = await fetch('/api/vectors/v2/chapters/' + VecState.chId, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: $('#vecTitle').value, content: $('#vecContent').value }),
+    });
+    const j = await r.json();
+    if (j.ok) { showToast('已保存'); loadVectorChapters(); }
+    else showToast('保存失败', true);
+  });
+  $('#vecContent')?.addEventListener('input', updateVecWordCount);
+  $('#vecSearchBtn').addEventListener('click', async () => {
+    const q = $('#vecQuery').value.trim();
+    if (!q) return;
+    // 简化: 当前库内搜所有章节, 关键词粗排
+    const box = $('#vecHits'); box.innerHTML = '<div style="color:var(--text-soft);font-size:12px">搜索中…</div>';
+    if (!VecState.chapters.length) { box.innerHTML = '<div style="color:var(--text-soft);font-size:12px">没有章节可搜</div>'; return; }
+    const hits = [];
+    const qLower = q.toLowerCase();
+    for (const c of VecState.chapters) {
+      const t = (c.title || '').toLowerCase();
+      const cnt = (c.content || '').toLowerCase();
+      let score = 0;
+      if (t.includes(qLower)) score += 5;
+      const idx = cnt.indexOf(qLower);
+      if (idx >= 0) score += 1 + (cnt.length - idx) / 5000;  // 靠前略加权
+      if (score > 0) {
+        const pos = idx >= 0 ? idx : 0;
+        const snip = (c.content || '').substr(pos, 100);
+        hits.push({ source: '第 ' + c.no + ' 章 ' + c.title, snippet: snip, score });
+      }
+    }
+    hits.sort((a, b) => b.score - a.score);
+    box.innerHTML = '';
+    for (const h of hits.slice(0, 10)) {
+      const el = document.createElement('div');
+      el.style.cssText = 'padding:6px 8px;background:rgba(255,255,255,0.6);border:1px solid var(--border);border-radius:5px;cursor:pointer';
+      el.innerHTML = `<div style="font-size:11px;color:var(--text-soft)">${escapeHtml(h.source)} · 分数 ${h.score.toFixed(2)}</div>
+        <div style="font-size:12px;margin-top:2px">${escapeHtml(h.snippet)}…</div>`;
+      el.addEventListener('click', () => {
+        const c = VecState.chapters.find(x => ('第 ' + x.no + ' 章 ' + x.title) === h.source);
+        if (c) openVectorChapter(c);
+      });
       box.appendChild(el);
     }
-    if (!hits || !hits.length) box.innerHTML = '<div style="color:var(--text-soft);font-size:12.5px">无命中</div>';
+    if (!hits.length) box.innerHTML = '<div style="color:var(--text-soft);font-size:12px">无命中</div>';
   });
-  renderVectorsSidebar($('#sidebar'));
 }
 
 // ---- Skills ----

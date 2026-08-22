@@ -111,4 +111,38 @@ bool deleteConversation(long long id);
 std::vector<Message> listMessages(long long convId);
 long long appendMessage(long long convId, const std::string& role, const std::string& content);
 
+// ---- 向量库 (VectorLibrary + VectorChapter) ----
+struct VectorLibrary {
+    long long id = 0;
+    std::string title;
+    std::string author;
+    std::string category;
+    std::string summary;
+    int chunkCount = 0;
+    long long createdAt = 0;
+    long long updatedAt = 0;
+};
+struct VectorChapter {
+    long long id = 0;
+    long long libraryId = 0;
+    int no = 0;        // 章节号
+    std::string title;
+    std::string content;
+    long long updatedAt = 0;
+};
+std::vector<VectorLibrary> listVectorLibraries();
+std::optional<VectorLibrary> getVectorLibrary(long long id);
+long long createVectorLibrary(const std::string& title, const std::string& author,
+                              const std::string& category, const std::string& summary);
+bool updateVectorLibrary(long long id, const std::string& title, const std::string& author,
+                         const std::string& category, const std::string& summary);
+bool deleteVectorLibrary(long long id);
+
+std::vector<VectorChapter> listVectorChapters(long long libraryId);
+std::optional<VectorChapter> getVectorChapter(long long id);
+long long createVectorChapter(long long libraryId, int no, const std::string& title,
+                              const std::string& content);
+bool updateVectorChapter(long long id, const std::string& title, const std::string& content);
+bool deleteVectorChapter(long long id);
+
 }  // namespace zhinai::db

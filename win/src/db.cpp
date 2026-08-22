@@ -104,6 +104,26 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, created_at);
+CREATE TABLE IF NOT EXISTS vector_libraries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    author TEXT,
+    category TEXT,
+    summary TEXT,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vector_chapters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    library_id INTEGER NOT NULL,
+    no INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (library_id) REFERENCES vector_libraries(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_vc_lib ON vector_chapters(library_id, no);
 )sql";
 
 // 增量迁移: 给 books 加 metadata 列 (platform, target_chapters, chapter_word_count, genres)
@@ -569,6 +589,146 @@ long long appendMessage(long long convId, const std::string& role, const std::st
     sqlite3_bind_int64(st.p, 4, nowSec());
     if (sqlite3_step(st.p) != SQLITE_DONE) return 0;
     return sqlite3_last_insert_rowid(g_db);
+}
+
+// ---- VectorLibrary ----
+std::vector<VectorLibrary> listVectorLibraries() {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    std::vector<VectorLibrary> out;
+    PREP("SELECT id,title,author,category,summary,chunk_count,created_at,updated_at FROM vector_libraries ORDER BY id DESC")
+    while (sqlite3_step(st.p) == SQLITE_ROW) {
+        VectorLibrary L;
+        L.id = sqlite3_column_int64(st.p, 0);
+        L.title = colText(st.p, 1);
+        L.author = colText(st.p, 2);
+        L.category = colText(st.p, 3);
+        L.summary = colText(st.p, 4);
+        L.chunkCount = sqlite3_column_int(st.p, 5);
+        L.createdAt = sqlite3_column_int64(st.p, 6);
+        L.updatedAt = sqlite3_column_int64(st.p, 7);
+        out.push_back(std::move(L));
+    }
+    return out;
+}
+
+std::optional<VectorLibrary> getVectorLibrary(long long id) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("SELECT id,title,author,category,summary,chunk_count,created_at,updated_at FROM vector_libraries WHERE id=?")
+    sqlite3_bind_int64(st.p, 1, id);
+    if (sqlite3_step(st.p) == SQLITE_ROW) {
+        VectorLibrary L;
+        L.id = sqlite3_column_int64(st.p, 0);
+        L.title = colText(st.p, 1);
+        L.author = colText(st.p, 2);
+        L.category = colText(st.p, 3);
+        L.summary = colText(st.p, 4);
+        L.chunkCount = sqlite3_column_int(st.p, 5);
+        L.createdAt = sqlite3_column_int64(st.p, 6);
+        L.updatedAt = sqlite3_column_int64(st.p, 7);
+        return L;
+    }
+    return std::nullopt;
+}
+
+long long createVectorLibrary(const std::string& title, const std::string& author,
+                              const std::string& category, const std::string& summary) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("INSERT INTO vector_libraries(title,author,category,summary,chunk_count,created_at,updated_at) VALUES(?,?,?,?,0,?,?)")
+    bindText(st.p, 1, title);
+    bindText(st.p, 2, author);
+    bindText(st.p, 3, category);
+    bindText(st.p, 4, summary);
+    auto t = nowSec();
+    sqlite3_bind_int64(st.p, 5, t);
+    sqlite3_bind_int64(st.p, 6, t);
+    if (sqlite3_step(st.p) != SQLITE_DONE) return 0;
+    return sqlite3_last_insert_rowid(g_db);
+}
+
+bool updateVectorLibrary(long long id, const std::string& title, const std::string& author,
+                         const std::string& category, const std::string& summary) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("UPDATE vector_libraries SET title=?,author=?,category=?,summary=?,updated_at=? WHERE id=?")
+    bindText(st.p, 1, title);
+    bindText(st.p, 2, author);
+    bindText(st.p, 3, category);
+    bindText(st.p, 4, summary);
+    sqlite3_bind_int64(st.p, 5, nowSec());
+    sqlite3_bind_int64(st.p, 6, id);
+    return sqlite3_step(st.p) == SQLITE_DONE;
+}
+
+bool deleteVectorLibrary(long long id) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("DELETE FROM vector_libraries WHERE id=?")
+    sqlite3_bind_int64(st.p, 1, id);
+    return sqlite3_step(st.p) == SQLITE_DONE;
+}
+
+// ---- VectorChapter ----
+std::vector<VectorChapter> listVectorChapters(long long libraryId) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    std::vector<VectorChapter> out;
+    PREP("SELECT id,library_id,no,title,content,updated_at FROM vector_chapters WHERE library_id=? ORDER BY no")
+    sqlite3_bind_int64(st.p, 1, libraryId);
+    while (sqlite3_step(st.p) == SQLITE_ROW) {
+        VectorChapter c;
+        c.id = sqlite3_column_int64(st.p, 0);
+        c.libraryId = sqlite3_column_int64(st.p, 1);
+        c.no = sqlite3_column_int(st.p, 2);
+        c.title = colText(st.p, 3);
+        c.content = colText(st.p, 4);
+        c.updatedAt = sqlite3_column_int64(st.p, 5);
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+std::optional<VectorChapter> getVectorChapter(long long id) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("SELECT id,library_id,no,title,content,updated_at FROM vector_chapters WHERE id=?")
+    sqlite3_bind_int64(st.p, 1, id);
+    if (sqlite3_step(st.p) == SQLITE_ROW) {
+        VectorChapter c;
+        c.id = sqlite3_column_int64(st.p, 0);
+        c.libraryId = sqlite3_column_int64(st.p, 1);
+        c.no = sqlite3_column_int(st.p, 2);
+        c.title = colText(st.p, 3);
+        c.content = colText(st.p, 4);
+        c.updatedAt = sqlite3_column_int64(st.p, 5);
+        return c;
+    }
+    return std::nullopt;
+}
+
+long long createVectorChapter(long long libraryId, int no, const std::string& title,
+                              const std::string& content) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("INSERT INTO vector_chapters(library_id,no,title,content,updated_at) VALUES(?,?,?,?,?)")
+    sqlite3_bind_int64(st.p, 1, libraryId);
+    sqlite3_bind_int(st.p, 2, no);
+    bindText(st.p, 3, title);
+    bindText(st.p, 4, content);
+    sqlite3_bind_int64(st.p, 5, nowSec());
+    if (sqlite3_step(st.p) != SQLITE_DONE) return 0;
+    return sqlite3_last_insert_rowid(g_db);
+}
+
+bool updateVectorChapter(long long id, const std::string& title, const std::string& content) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("UPDATE vector_chapters SET title=?,content=?,updated_at=? WHERE id=?")
+    bindText(st.p, 1, title);
+    bindText(st.p, 2, content);
+    sqlite3_bind_int64(st.p, 3, nowSec());
+    sqlite3_bind_int64(st.p, 4, id);
+    return sqlite3_step(st.p) == SQLITE_DONE;
+}
+
+bool deleteVectorChapter(long long id) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    PREP("DELETE FROM vector_chapters WHERE id=?")
+    sqlite3_bind_int64(st.p, 1, id);
+    return sqlite3_step(st.p) == SQLITE_DONE;
 }
 
 }  // namespace zhinai::db
