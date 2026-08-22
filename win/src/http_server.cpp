@@ -14,12 +14,24 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <queue>
+#include <condition_variable>
 
 namespace zhinai::http {
 
 namespace {
 
 using nlohmann::json;
+
+// 流式状态: producer 线程 + provider 线程共享, 通过 mutex + cv 同步
+struct StreamState {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::queue<std::string> queue;
+    bool done = false;
+    bool cancelled = false;
+    ~StreamState() = default;
+};
 
 httplib::Server* asImpl(void* p) { return reinterpret_cast<httplib::Server*>(p); }
 
@@ -319,7 +331,7 @@ void registerLLM(httplib::Server& s) {
                         "application/json");
     });
 
-    // 流式对话 (SSE) - 同样支持 skillId
+    // 流式对话 (SSE) - 真正 chunked, 边收边推
     s.Post("/api/llm/chat/stream", [](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded()) { res.status = 400; return; }
@@ -370,20 +382,56 @@ void registerLLM(httplib::Server& s) {
             }
         }
 
-        std::string err;
-        res.set_header("Content-Type", "text/event-stream");
-        res.set_header("Cache-Control", "no-cache");
-        res.set_header("Connection", "keep-alive");
-        std::string full;
-        llm::chatStream(r, [&](const std::string& d) {
-            full += d;
-            return true;
-        }, err);
-        if (!err.empty()) {
-            res.body = "data: " + json{{"error", err}}.dump() + "\n\n";
-        } else {
-            res.body = "data: " + json{{"done", true}, {"content", full}}.dump() + "\n\n";
-        }
+        // chunked SSE: producer 线程调 chatStream, 把 delta 写进 queue
+        // provider 拉 queue 写到 socket. done 标志通知结束.
+        auto* state = new StreamState();
+        std::thread producer([state, r]() mutable {
+            std::string err;
+            llm::chatStream(r,
+                [state](const std::string& d) -> bool {
+                    if (state->cancelled) return false;
+                    {
+                        std::lock_guard<std::mutex> lk(state->mtx);
+                        state->queue.push("data: " + json{{"delta", d}}.dump() + "\n\n");
+                    }
+                    state->cv.notify_one();
+                    return true;
+                },
+                err);
+            {
+                std::lock_guard<std::mutex> lk(state->mtx);
+                if (!err.empty()) {
+                    state->queue.push("data: " + json{{"error", err}}.dump() + "\n\n");
+                } else {
+                    state->queue.push("data: " + json{{"done", true}}.dump() + "\n\n");
+                }
+                state->done = true;
+            }
+            state->cv.notify_one();
+        });
+        producer.detach();
+
+        res.set_chunked_content_provider("text/event-stream; charset=utf-8",
+            [state](size_t /*offset*/, httplib::DataSink& sink) -> bool {
+                std::unique_lock<std::mutex> lk(state->mtx);
+                state->cv.wait_for(lk, std::chrono::milliseconds(500),
+                                   [state]() { return !state->queue.empty() || state->done; });
+                if (!state->queue.empty()) {
+                    auto chunk = state->queue.front();
+                    state->queue.pop();
+                    lk.unlock();
+                    sink.write(chunk.data(), chunk.size());
+                    return true;
+                }
+                // queue 空 + done -> 结束
+                if (state->done) {
+                    delete state;  // 释放
+                    return false;
+                }
+                // 还没 done, 继续等 (但避免空 spin)
+                lk.unlock();
+                return true;
+            });
     });
 }
 
@@ -499,6 +547,56 @@ void registerStatic(httplib::Server& s, const std::string& webDir) {
     });
 }
 
+void registerSearch(httplib::Server& s) {
+    s.Get("/api/search", [](const httplib::Request& req, httplib::Response& res) {
+        std::string q = req.get_param_value("q");
+        if (q.empty()) { res.set_content("[]", "application/json"); return; }
+        // 简单 LIKE 搜索 (够用), FTS5 等下版升级
+        auto books = db::listBooks();
+        json out = json::array();
+        for (const auto& b : books) {
+            if (b.title.find(q) != std::string::npos ||
+                b.author.find(q) != std::string::npos ||
+                b.summary.find(q) != std::string::npos) {
+                out.push_back({{"type", "book"}, {"id", b.id}, {"title", b.title},
+                                {"snippet", b.summary}, {"score", 1}});
+            }
+        }
+        for (const auto& b : books) {
+            for (const auto& c : db::listChapters(b.id)) {
+                if (c.title.find(q) != std::string::npos ||
+                    c.content.find(q) != std::string::npos) {
+                    std::string snippet;
+                    auto pos = c.content.find(q);
+                    if (pos != std::string::npos) {
+                        size_t start = (pos > 40) ? pos - 40 : 0;
+                        size_t end = std::min(c.content.size(), pos + q.size() + 40);
+                        snippet = c.content.substr(start, end - start);
+                    } else snippet = c.title;
+                    out.push_back({{"type", "chapter"}, {"id", c.id}, {"bookId", b.id},
+                                    {"title", c.title}, {"snippet", snippet}, {"score", 1}});
+                }
+            }
+        }
+        for (const auto& e : db::listLore()) {
+            if (e.name.find(q) != std::string::npos ||
+                e.content.find(q) != std::string::npos ||
+                e.keywords.find(q) != std::string::npos) {
+                std::string snippet;
+                auto pos = e.content.find(q);
+                if (pos != std::string::npos) {
+                    size_t start = (pos > 40) ? pos - 40 : 0;
+                    size_t end = std::min(e.content.size(), pos + q.size() + 40);
+                    snippet = e.content.substr(start, end - start);
+                } else snippet = e.name;
+                out.push_back({{"type", "lore"}, {"id", e.id}, {"name", e.name},
+                                {"snippet", snippet}, {"score", 1}});
+            }
+        }
+        res.set_content(out.dump(), "application/json");
+    });
+}
+
 }  // namespace
 
 bool start(Server& s, const std::string& webDir, int& outPort) {
@@ -507,6 +605,7 @@ bool start(Server& s, const std::string& webDir, int& outPort) {
 
     registerBooks(*impl);
     registerChapters(*impl);
+    registerSearch(*impl);
     registerLore(*impl);
     registerAgents(*impl);
     registerConversations(*impl);

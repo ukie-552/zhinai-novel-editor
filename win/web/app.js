@@ -62,6 +62,7 @@ async function callRest(method, params) {
     'config.get':           ['GET',  '/api/config'],
     'config.set':           ['PUT',  '/api/config', params],
     'skills.catalog':       ['GET',  '/api/skills/catalog'],
+    'search.query':         ['GET',  '/api/search?q=' + encodeURIComponent(params.q)],
     'system.openDataDir':   ['POST', '/api/system/openDataDir'],
   };
   const spec = map[method];
@@ -203,7 +204,7 @@ async function createBookFlow() {
 
 // ---- 视图切换 ----
 const TAB_TITLES = {
-  books: '作品', chapters: '章节', lore: '设定库', chat: '对话',
+  books: '作品', chapters: '章节', lore: '设定库', search: '搜索', chat: '对话',
   agents: 'Agent', vectors: '向量库', skills: '技能', settings: '设置',
 };
 function switchTab(tab) {
@@ -220,6 +221,7 @@ function loadSidebar() {
   if (State.tab === 'books') return renderBooksSidebar(sb);
   if (State.tab === 'chapters') return renderChaptersSidebar(sb);
   if (State.tab === 'lore') return renderLoreSidebar(sb);
+  if (State.tab === 'search') return;  // 搜索无侧栏
   if (State.tab === 'chat') return renderChatSidebar(sb);
   if (State.tab === 'agents') return renderAgentsSidebar(sb);
   if (State.tab === 'vectors') return renderVectorsSidebar(sb);
@@ -235,6 +237,7 @@ function loadMain() {
   if (State.tab === 'books') return renderBooks();
   if (State.tab === 'chapters') return renderChapters();
   if (State.tab === 'lore') return renderLore();
+  if (State.tab === 'search') return renderSearch();
   if (State.tab === 'chat') return renderChat();
   if (State.tab === 'agents') return renderAgents();
   if (State.tab === 'vectors') return renderVectors();
@@ -446,24 +449,57 @@ async function aiRunSkill(skillId) {
   // loading 弹窗
   showSkillModal(skill, '⏳ 生成中…', '', false);
 
+  // 流式调用: 边收边显示
+  let text = '';
+  let errored = false;
   try {
-    const result = await api.llm.chat({
-      skillId,
-      messages: [{ role: 'user', content: userText }],
-      temperature: 0.7,
-      loreHits: hits.map(h => ({ name: h.name, content: h.content })),
+    const resp = await fetch('/api/llm/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        skillId,
+        messages: [{ role: 'user', content: userText }],
+        temperature: 0.7,
+        loreHits: hits.map(h => ({ name: h.name, content: h.content })),
+      }),
     });
-    const text = (result && (result.content || result.data?.content)) || '';
-    if (!text) {
-      showSkillModal(skill, '⚠ 无内容返回', '请检查 API 配置或换个模型试试.', true);
-      return;
+    if (!resp.ok || !resp.body) {
+      throw new Error('http ' + resp.status);
     }
-    // 根据 skill 类型显示不同操作按钮
-    const actions = skillActionsFor(skillId, text);
-    showSkillModal(skill, '生成结果', text, false, actions);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      for (const evt of chunk.split('\n\n')) {
+        if (!evt.startsWith('data: ')) continue;
+        let data;
+        try { data = JSON.parse(evt.slice(6)); } catch { continue; }
+        if (data.error) {
+          showSkillModal(skill, '✗ 调用失败: ' + data.error, text, true);
+          errored = true;
+        } else if (data.delta) {
+          text += data.delta;
+          updateSkillModalText(text);
+        } else if (data.done) {
+          // 完成
+        }
+      }
+    }
   } catch (e) {
-    showSkillModal(skill, '✗ 调用失败: ' + e.message, '', true);
+    showSkillModal(skill, '✗ 调用失败: ' + e.message, text, true);
+    errored = true;
   }
+
+  if (errored) return;
+  if (!text) {
+    showSkillModal(skill, '⚠ 无内容返回', '请检查 API 配置或换个模型试试.', true);
+    return;
+  }
+  // 根据 skill 类型显示不同操作按钮
+  const actions = skillActionsFor(skillId, text);
+  showSkillModalActions(actions);
 }
 
 function skillActionsFor(skillId, text) {
@@ -477,7 +513,7 @@ function skillActionsFor(skillId, text) {
   return [{ label: '复制到剪贴板', act: 'copy', text }];
 }
 
-function showSkillModal(skill, title, body, isError, actions) {
+function showSkillModal(skill, title, body, isError) {
   let modal = document.getElementById('skillModal');
   if (!modal) {
     modal = document.createElement('div');
@@ -485,7 +521,6 @@ function showSkillModal(skill, title, body, isError, actions) {
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999';
     document.body.appendChild(modal);
   }
-  const actBtns = (actions || []).map((a, i) => `<button class="btn-primary" data-act="${i}">${a.label}</button>`).join('');
   modal.innerHTML = `
     <div style="background:#fff;border-radius:12px;max-width:720px;width:90%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden">
       <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
@@ -494,48 +529,63 @@ function showSkillModal(skill, title, body, isError, actions) {
         <span style="flex:1"></span>
         <button class="btn-icon" id="skillModalClose">✕</button>
       </div>
-      <div style="padding:16px 20px;overflow:auto;flex:1;white-space:pre-wrap;font:13px/1.7 ui-monospace,Menlo,monospace;color:${isError ? '#b91c1c' : '#1c1917'};background:${isError ? '#fef2f2' : '#fafaf9'}">${escapeHtml(body || title)}</div>
-      <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
-        ${actBtns}
+      <div id="skillModalBody" style="padding:16px 20px;overflow:auto;flex:1;white-space:pre-wrap;font:13px/1.7 ui-monospace,Menlo,monospace;color:${isError ? '#b91c1c' : '#1c1917'};background:${isError ? '#fef2f2' : '#fafaf9'}">${escapeHtml(body || title)}</div>
+      <div id="skillModalFoot" style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
         <button class="btn-secondary" id="skillModalClose2">关闭</button>
       </div>
     </div>
   `;
   modal.style.display = 'flex';
-  // 关闭
-  const close = () => { modal.style.display = 'none'; };
-  modal.querySelector('#skillModalClose').onclick = close;
-  modal.querySelector('#skillModalClose2').onclick = close;
-  // 操作
-  if (actions) {
-    modal.querySelectorAll('[data-act]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const a = actions[parseInt(btn.dataset.act)];
-        if (a.act === 'appendChapter') {
-          const ed = $('#editor');
-          if (ed) { ed.value = (ed.value ? ed.value + '\n\n' : '') + a.text; updateWordCount(); saveChapter(false); showToast('已追加到章节'); }
-          close();
-        } else if (a.act === 'replaceChapter') {
-          const ed = $('#editor');
-          if (ed) { ed.value = a.text; updateWordCount(); saveChapter(false); showToast('已替换'); }
-          close();
-        } else if (a.act === 'addLore') {
-          const kind = a.skillId === 'character' ? 'character' :
-                       a.skillId === 'location'   ? 'location'   :
-                       a.skillId === 'faction'    ? 'other'      :
-                       a.skillId === 'item'       ? 'item'       :
-                       a.skillId === 'worldbuilding' ? 'world'    : 'other';
-          const name = prompt('设定名?', extractName(a.text) || '新设定');
-          if (name) {
-            api.lore.create({ kind, name, content: a.text, keywords: '' }).then(() => { showToast('已加到设定库'); switchTab('lore'); });
-            close();
-          }
-        } else if (a.act === 'copy') {
-          navigator.clipboard.writeText(a.text).then(() => showToast('已复制'));
-        }
-      });
-    });
+  modal._close = () => { modal.style.display = 'none'; };
+  modal.querySelector('#skillModalClose').onclick = modal._close;
+  modal.querySelector('#skillModalClose2').onclick = modal._close;
+}
+
+function updateSkillModalText(text) {
+  const m = document.getElementById('skillModalBody');
+  if (m) {
+    m.textContent = text;
+    // 滚到底
+    const wrap = m.parentElement;
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
   }
+}
+
+function showSkillModalActions(actions) {
+  const foot = document.getElementById('skillModalFoot');
+  const modal = document.getElementById('skillModal');
+  if (!foot || !modal) return;
+  // 重新生成 foot 区域, 加操作按钮
+  const actBtns = (actions || []).map((a, i) => `<button class="btn-primary" data-act="${i}">${a.label}</button>`).join('');
+  foot.innerHTML = actBtns + '<button class="btn-secondary" id="skillModalClose2">关闭</button>';
+  foot.querySelector('#skillModalClose2').onclick = modal._close;
+  foot.querySelectorAll('[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const a = actions[parseInt(btn.dataset.act)];
+      if (a.act === 'appendChapter') {
+        const ed = $('#editor');
+        if (ed) { ed.value = (ed.value ? ed.value + '\n\n' : '') + a.text; updateWordCount(); saveChapter(false); showToast('已追加到章节'); }
+        modal._close();
+      } else if (a.act === 'replaceChapter') {
+        const ed = $('#editor');
+        if (ed) { ed.value = a.text; updateWordCount(); saveChapter(false); showToast('已替换'); }
+        modal._close();
+      } else if (a.act === 'addLore') {
+        const kind = a.skillId === 'character' ? 'character' :
+                     a.skillId === 'location'   ? 'location'   :
+                     a.skillId === 'faction'    ? 'other'      :
+                     a.skillId === 'item'       ? 'item'       :
+                     a.skillId === 'worldbuilding' ? 'world'    : 'other';
+        const name = prompt('设定名?', extractName(a.text) || '新设定');
+        if (name) {
+          api.lore.create({ kind, name, content: a.text, keywords: '' }).then(() => { showToast('已加到设定库'); switchTab('lore'); });
+          modal._close();
+        }
+      } else if (a.act === 'copy') {
+        navigator.clipboard.writeText(a.text).then(() => showToast('已复制'));
+      }
+    });
+  });
 }
 
 function extractName(text) {
@@ -797,6 +847,69 @@ async function editAgentFlow(a) {
   const prompt = prompt('系统提示词', a ? a.prompt : '') ?? '';
   await api.agents.save({ id: a ? a.id : 0, name, model, skill, prompt, toolGroups: a ? a.toolGroups : '' });
   renderAgents(); renderAgentsSidebar($('#sidebar'));
+}
+
+// ---- Search ----
+async function renderSearch() {
+  const input = $('#searchInput');
+  const btn = $('#searchBtn');
+  if (!input) return;
+  // Ctrl+K 聚焦
+  document.addEventListener('keydown', function onKey(e) {
+    if (e.ctrlKey && e.key === 'k') { e.preventDefault(); input.focus(); input.select(); }
+  });
+  // 提交
+  const doSearch = async () => {
+    const q = input.value.trim();
+    if (!q) return;
+    const out = $('#searchResults');
+    out.innerHTML = '<div style="color:var(--text-soft);padding:8px">搜索中…</div>';
+    try {
+      const results = await api.search.query({ q });
+      if (!results || !results.length) {
+        out.innerHTML = '<div style="color:var(--text-soft);padding:20px">无结果</div>';
+        return;
+      }
+      // 分组
+      const groups = { book: [], chapter: [], lore: [] };
+      const labels = { book: '📚 作品', chapter: '📄 章节', lore: '📖 设定' };
+      for (const r of results) {
+        if (!groups[r.type]) groups[r.type] = [];
+        groups[r.type].push(r);
+      }
+      out.innerHTML = '';
+      for (const k of ['book', 'chapter', 'lore']) {
+        if (!groups[k] || !groups[k].length) continue;
+        const hdr = document.createElement('div');
+        hdr.style.cssText = 'font-size:11px;color:var(--text-faint);margin:14px 0 6px;text-transform:uppercase;letter-spacing:0.05em';
+        hdr.textContent = labels[k] + ' (' + groups[k].length + ')';
+        out.appendChild(hdr);
+        for (const r of groups[k]) {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.style.marginBottom = '6px';
+          const title = r.type === 'lore' ? r.name : r.title;
+          const snippet = (r.snippet || '').replace(/</g, '&lt;');
+          card.innerHTML = `<div style="font-weight:600;font-size:13.5px">${escapeHtml(title)}</div>
+            <div style="font-size:12px;color:var(--text-soft);margin-top:4px;line-height:1.5">${escapeHtml(snippet)}</div>`;
+          card.addEventListener('click', () => {
+            if (r.type === 'book') { State.currentBookId = r.id; State.bookTitle = r.title; updateBookTitle(); switchTab('chapters'); }
+            else if (r.type === 'chapter') {
+              State.currentBookId = r.bookId; switchTab('chapters');
+              setTimeout(() => openChapter(r.id), 100);
+            }
+            else if (r.type === 'lore') { switchTab('lore'); setTimeout(() => loadLoreDetail(r.id), 100); }
+          });
+          out.appendChild(card);
+        }
+      }
+    } catch (e) {
+      $('#searchResults').innerHTML = '<div style="color:#b91c1c;padding:8px">搜索失败: ' + e.message + '</div>';
+    }
+  };
+  btn.addEventListener('click', doSearch);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  setTimeout(() => input.focus(), 50);
 }
 
 // ---- Vectors ----
